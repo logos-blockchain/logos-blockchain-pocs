@@ -6,38 +6,42 @@ use proof_statements::proof_of_leadership::{LeaderPrivate, LeaderPublic};
 
 const MAX_NOTE_COMMS: usize = 2usize.pow(8);
 
-
 pub struct ProvedLeader {
     pub leader: LeaderPublic,
     pub risc0_receipt: risc0_zkvm::Receipt,
 }
 
-
 impl ProvedLeader {
-    pub fn prove(input: &cl::InputWitness, epoch_nonce: [u8;32], slot: u64, active_slot_coefficient: f64, total_stake: u64, note_commitments: &[cl::NoteCommitment]) -> Self {
+    pub fn prove(
+        input: &cl::InputWitness,
+        epoch_nonce: [u8; 32],
+        slot: u64,
+        active_slot_coefficient: f64,
+        total_stake: u64,
+        note_commitments: &[cl::NoteCommitment],
+    ) -> Self {
         let note_cm = input.note_commitment();
         let cm_leaves = note_commitment_leaves(note_commitments);
-        let cm_idx = note_commitments
-            .iter()
-            .position(|c| c == &note_cm)
-            .unwrap();
+        let cm_idx = note_commitments.iter().position(|c| c == &note_cm).unwrap();
         let note_cm_path = cl::merkle::path(cm_leaves, cm_idx);
-	let cm_root = cl::merkle::root(cm_leaves);
+        let cm_root = cl::merkle::root(cm_leaves);
 
-	let leader_private = LeaderPrivate {
-	    input: *input,
-	    input_cm_path: note_cm_path,
-	};
+        let leader_private = LeaderPrivate {
+            input: *input,
+            input_cm_path: note_cm_path,
+        };
 
-	let leader_public = LeaderPublic::new(
-	    cm_root,
-	    epoch_nonce,
-	    slot,
-	    active_slot_coefficient,
-	    total_stake,
-	    input.nullifier(),
-	    input.evolve_output(cl::BalanceWitness::new(Scalar::ZERO)).commit_note(),
-	);
+        let leader_public = LeaderPublic::new(
+            cm_root,
+            epoch_nonce,
+            slot,
+            active_slot_coefficient,
+            total_stake,
+            input.nullifier(),
+            input
+                .evolve_output(cl::BalanceWitness::new(Scalar::ZERO))
+                .commit_note(),
+        );
 
         let env = risc0_zkvm::ExecutorEnv::builder()
             .write(&leader_public)
@@ -56,7 +60,7 @@ impl ProvedLeader {
         // This struct contains the receipt along with statistics about execution of the guest
         let opts = risc0_zkvm::ProverOpts::succinct();
         let prove_info = prover
-            .prove_with_opts(env, nomos_pol_risc0_proofs::PROOF_OF_LEADERSHIP_ELF, &opts)
+            .prove_with_opts(env, pol_risc0_proofs::PROOF_OF_LEADERSHIP_ELF, &opts)
             .unwrap();
 
         println!(
@@ -85,11 +89,10 @@ impl ProvedLeader {
         self.leader == proved_public_inputs
             && self
                 .risc0_receipt
-                .verify(nomos_pol_risc0_proofs::PROOF_OF_LEADERSHIP_ID)
+                .verify(pol_risc0_proofs::PROOF_OF_LEADERSHIP_ID)
                 .is_ok()
     }
 }
-
 
 fn note_commitment_leaves(note_commitments: &[cl::NoteCommitment]) -> [[u8; 32]; MAX_NOTE_COMMS] {
     let note_comm_bytes = Vec::from_iter(note_commitments.iter().map(|c| c.as_bytes().to_vec()));
@@ -115,29 +118,37 @@ mod test {
         };
 
         let notes = vec![input.note_commitment()];
-	let epoch_nonce = [0u8; 32];
-	let slot = 0;
-	let active_slot_coefficient = 0.05;
-	let total_stake = 1000;
+        let epoch_nonce = [0u8; 32];
+        let slot = 0;
+        let active_slot_coefficient = 0.05;
+        let total_stake = 1000;
 
         let mut expected_public_inputs = LeaderPublic::new(
-	    cl::merkle::root(note_commitment_leaves(&notes)),
-	    epoch_nonce,
-	    slot,
-	    active_slot_coefficient,
-	    total_stake,
-	    input.nullifier(),
-	    input.evolve_output(cl::BalanceWitness::new(Scalar::ZERO)).commit_note(),
-	);
+            cl::merkle::root(note_commitment_leaves(&notes)),
+            epoch_nonce,
+            slot,
+            active_slot_coefficient,
+            total_stake,
+            input.nullifier(),
+            input
+                .evolve_output(cl::BalanceWitness::new(Scalar::ZERO))
+                .commit_note(),
+        );
 
-	while !expected_public_inputs.check_winning(&input) {
-	    expected_public_inputs.slot += 1;
-	}
+        while !expected_public_inputs.check_winning(&input) {
+            expected_public_inputs.slot += 1;
+        }
 
-	println!("slot={}", expected_public_inputs.slot);
+        println!("slot={}", expected_public_inputs.slot);
 
-        let proved_leader = ProvedLeader::prove(&input, expected_public_inputs.epoch_nonce, expected_public_inputs.slot, active_slot_coefficient, total_stake, &notes);
-
+        let proved_leader = ProvedLeader::prove(
+            &input,
+            expected_public_inputs.epoch_nonce,
+            expected_public_inputs.slot,
+            active_slot_coefficient,
+            total_stake,
+            &notes,
+        );
 
         assert_eq!(proved_leader.leader, expected_public_inputs);
         assert!(proved_leader.verify());

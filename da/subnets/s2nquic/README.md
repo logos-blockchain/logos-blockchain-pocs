@@ -1,6 +1,6 @@
 # Large number of direct UDP connections test
 
-In Nomos DA, the Executor has to maintain persistent connections to 4096 (or more for redundancy) DA Nodes for dispersing the encoded blobs. To see if such number of connections is feasable, a test mimicking high speed dispersal was conducted.
+In Logos Blockchain DA, the Executor has to maintain persistent connections to 4096 (or more for redundancy) DA Nodes for dispersing the encoded blobs. To see if such number of connections is feasable, a test mimicking high speed dispersal was conducted.
 
 ## Test setup
 

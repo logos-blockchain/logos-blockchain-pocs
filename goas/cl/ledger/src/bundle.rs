@@ -32,7 +32,7 @@ impl ProvedBundle {
 
         let opts = risc0_zkvm::ProverOpts::succinct();
         let prove_info = prover
-            .prove_with_opts(env, nomos_cl_risc0_proofs::BUNDLE_ELF, &opts)
+            .prove_with_opts(env, cl_risc0_proofs::BUNDLE_ELF, &opts)
             .map_err(|_| Error::Risc0ProofFailed)?;
 
         println!(
@@ -61,7 +61,7 @@ impl ProvedBundle {
         Vec::from_iter(self.bundle.partials.iter().map(|ptx| ptx.balance)) == bundle_public.balances
             && self
                 .risc0_receipt
-                .verify(nomos_cl_risc0_proofs::BUNDLE_ID)
+                .verify(cl_risc0_proofs::BUNDLE_ID)
                 .is_ok()
     }
 }
