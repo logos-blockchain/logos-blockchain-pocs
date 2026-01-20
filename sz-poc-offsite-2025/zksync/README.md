@@ -1,7 +1,7 @@
 
 # ZKSync Era-based Validium Deployment
 
-This repository documents the deployment of a **ZKSync Era-based Validium proof-of-concept (PoC)** showcased by **Nomos** during **IFT All-Hands 2025** in Split.
+This repository documents the deployment of a **ZKSync Era-based Validium proof-of-concept (PoC)** showcased by **Logos Blockchain** during **IFT All-Hands 2025** in Split.
 
 It uses a forked version of the ZKSync Era framework. You can find the repository here:  
 👉 [logos-co/zksync-era][zksync-era-fork-repo]
@@ -17,9 +17,9 @@ For detailed documentation, including architecture and components of the framewo
 
 ---
 
-## Deploy a ZKSync Era Validium with Nomos DA
+## Deploy a ZKSync Era Validium with Logos Blockchain DA
 
-This guide walks you through setting up a **GPU-proved Validium L2** chain using **Nomos DA** and the forked ZKSync Era framework.
+This guide walks you through setting up a **GPU-proved Validium L2** chain using **Logos Blockchain DA** and the forked ZKSync Era framework.
 
 If you need to modify any parameters, refer to the official ZKSync documentation to understand their implications.
 
@@ -95,8 +95,8 @@ zkstack ecosystem create \
      --verbose
    ```
 
-3. When prompted, choose `"Nomos"` as the DA provider and enter:
-   - Nomos DA disperal endpoint URL
+3. When prompted, choose `"Logos Blockchain"` as the DA provider and enter:
+   - Logos Blockchain DA disperal endpoint URL
    - Username/password for HTTP basic auth according to the node configuration
    - A 64-character hex App ID (without the `0x`), e.g.:
 

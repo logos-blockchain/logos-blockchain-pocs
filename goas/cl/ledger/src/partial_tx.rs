@@ -59,7 +59,7 @@ impl ProvedPartialTx {
         // This struct contains the receipt along with statistics about execution of the guest
         let opts = risc0_zkvm::ProverOpts::succinct();
         let prove_info = prover
-            .prove_with_opts(env, nomos_cl_risc0_proofs::PTX_ELF, &opts)
+            .prove_with_opts(env, cl_risc0_proofs::PTX_ELF, &opts)
             .map_err(|_| Error::Risc0ProofFailed)?;
 
         println!(
@@ -109,9 +109,7 @@ impl ProvedPartialTx {
             }
         }
 
-        self.risc0_receipt
-            .verify(nomos_cl_risc0_proofs::PTX_ID)
-            .is_ok()
+        self.risc0_receipt.verify(cl_risc0_proofs::PTX_ID).is_ok()
     }
 }
 

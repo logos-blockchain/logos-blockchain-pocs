@@ -1,10 +1,10 @@
-# Zone Executor to Nomos DA Communication
+# Zone Executor to Logos Blockchain DA Communication
 
-Protocol for communication between the Zone Executor and Nomos DA using Protocol Buffers (protobuf).
+Protocol for communication between the Zone Executor and Logos Blockchain DA using Protocol Buffers (protobuf).
 
 ## Overview
 
-The protocol defines messages used to request and respond to data dispersal, sampling operations, and session control within the Nomos DA system. The communication involves the exchange of blobs (binary large objects) and error handling for various operations.
+The protocol defines messages used to request and respond to data dispersal, sampling operations, and session control within the Logos Blockchain DA system. The communication involves the exchange of blobs (binary large objects) and error handling for various operations.
 
 ## Messages
 

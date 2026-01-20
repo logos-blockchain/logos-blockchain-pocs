@@ -50,7 +50,7 @@ impl ConstraintProof {
     }
 
     pub fn nop_constraint() -> Constraint {
-        risc0_constraint(nomos_cl_risc0_proofs::CONSTRAINT_NOP_ID)
+        risc0_constraint(cl_risc0_proofs::CONSTRAINT_NOP_ID)
     }
 
     pub fn prove_nop(nf: cl::Nullifier, ptx_root: cl::PtxRoot) -> Self {
@@ -70,7 +70,7 @@ impl ConstraintProof {
         // This struct contains the receipt along with statistics about execution of the guest
         let opts = risc0_zkvm::ProverOpts::succinct();
         let prove_info = prover
-            .prove_with_opts(env, nomos_cl_risc0_proofs::CONSTRAINT_NOP_ELF, &opts)
+            .prove_with_opts(env, cl_risc0_proofs::CONSTRAINT_NOP_ELF, &opts)
             .unwrap();
 
         println!(
@@ -82,6 +82,6 @@ impl ConstraintProof {
         // extract the receipt.
         let receipt = prove_info.receipt;
 
-        Self::from_risc0(nomos_cl_risc0_proofs::CONSTRAINT_NOP_ID, receipt)
+        Self::from_risc0(cl_risc0_proofs::CONSTRAINT_NOP_ID, receipt)
     }
 }
