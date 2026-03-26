@@ -1,0 +1,1999 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DA Sampling Calculator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif; transition: background 0.2s; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { opacity: 1; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1117; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.1.9/umd/Recharts.js"></script>
+  <script>
+var __defProp = Object.defineProperty;
+var __defProps = Object.defineProperties;
+var __getOwnPropDescs = Object.getOwnPropertyDescriptors;
+var __getOwnPropSymbols = Object.getOwnPropertySymbols;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __propIsEnum = Object.prototype.propertyIsEnumerable;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __spreadValues = (a, b) => {
+  for (var prop in b || (b = {}))
+    if (__hasOwnProp.call(b, prop))
+      __defNormalProp(a, prop, b[prop]);
+  if (__getOwnPropSymbols)
+    for (var prop of __getOwnPropSymbols(b)) {
+      if (__propIsEnum.call(b, prop))
+        __defNormalProp(a, prop, b[prop]);
+    }
+  return a;
+};
+var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
+const React = window.React;
+const {
+  useState,
+  useMemo,
+  useCallback
+} = React;
+const {
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ReferenceLine,
+  ReferenceArea,
+  ResponsiveContainer,
+  ComposedChart,
+  Scatter
+} = window.Recharts;
+function makeLogFact(maxN) {
+  const lf = new Float64Array(maxN + 2);
+  lf[0] = 0;
+  for (let i = 1; i <= maxN + 1; i++) lf[i] = lf[i - 1] + Math.log(i);
+  return lf;
+}
+function logBinom(n, k, lf) {
+  if (k < 0 || k > n || n < 0) return -Infinity;
+  if (k === 0 || k === n) return 0;
+  return lf[n] - lf[k] - lf[n - k];
+}
+function hyperPMF(N, K, S, k, lf) {
+  const lo = Math.max(0, S - (N - K));
+  const hi = Math.min(S, K);
+  if (k < lo || k > hi) return 0;
+  const logp = logBinom(K, k, lf) + logBinom(N - K, S - k, lf) - logBinom(N, S, lf);
+  return Math.exp(logp);
+}
+function pDetect(N, NA, S, tau, lf) {
+  let p = 0;
+  const hi = Math.min(S, NA);
+  for (let g = Math.max(tau, 0); g <= hi; g++) p += hyperPMF(N, NA, S, g, lf);
+  return Math.min(1, Math.max(0, p));
+}
+function log10Alpha(N, K, S, tau, lf) {
+  const hi = Math.min(S, K);
+  if (tau > hi) return -Infinity;
+  let maxLogP = -Infinity;
+  const logPs = [];
+  for (let g = tau; g <= hi; g++) {
+    const lp = logBinom(K, g, lf) + logBinom(N - K, S - g, lf) - logBinom(N, S, lf);
+    logPs.push(lp);
+    if (lp > maxLogP) maxLogP = lp;
+  }
+  if (!isFinite(maxLogP)) return -Infinity;
+  let sum = 0;
+  for (const lp of logPs) sum += Math.exp(lp - maxLogP);
+  return (maxLogP + Math.log(sum)) * Math.LOG10E;
+}
+function log10Beta(N, K, Delta, S, tau, lf) {
+  const NA = K + Delta;
+  if (NA > N || tau <= 0) return -Infinity;
+  const hi = Math.min(tau - 1, Math.min(S, NA));
+  const lo = Math.max(0, S - (N - NA));
+  let maxLogP = -Infinity;
+  const logPs = [];
+  for (let g = lo; g <= hi; g++) {
+    const lp = logBinom(NA, g, lf) + logBinom(N - NA, S - g, lf) - logBinom(N, S, lf);
+    logPs.push(lp);
+    if (lp > maxLogP) maxLogP = lp;
+  }
+  if (!isFinite(maxLogP)) return -Infinity;
+  let sum = 0;
+  for (const lp of logPs) sum += Math.exp(lp - maxLogP);
+  return (maxLogP + Math.log(sum)) * Math.LOG10E;
+}
+function KL(q, p) {
+  if (q <= 0 || q >= 1 || p <= 0 || p >= 1) return Infinity;
+  return q * Math.log(q / p) + (1 - q) * Math.log((1 - q) / (1 - p));
+}
+function zQuantile(q) {
+  if (q >= 0.9999) return 3.719;
+  if (q >= 0.999) return 3.0902;
+  if (q >= 0.99) return 2.3263;
+  if (q >= 0.95) return 1.6449;
+  return 1.2816;
+}
+function negBinApprox(NB, p, zq) {
+  if (p <= 0 || p >= 1 || NB < 1) return null;
+  return (NB + zq * Math.sqrt(NB)) / p;
+}
+function negBinExact(NB, p, q) {
+  if (p <= 0 || p >= 1 || NB < 1) return null;
+  if (-NB * Math.log10(p) > 300) return null;
+  const MAX = 1e6;
+  let pmf = Math.pow(p, NB), cdf = pmf;
+  if (!isFinite(pmf) || pmf === 0) return null;
+  if (cdf >= q) return NB;
+  for (let t = NB + 1; t <= NB + MAX; t++) {
+    pmf *= (t - 1) / (t - NB) * (1 - p);
+    if (!isFinite(pmf) || pmf < 1e-300) break;
+    cdf += pmf;
+    if (cdf >= q) return t;
+  }
+  return null;
+}
+function findOptimalTau(N, K, Delta, S, lf) {
+  let bestTau = 0, bestMax = Infinity;
+  for (let t = 0; t <= S; t++) {
+    const a = pDetect(N, K, S, t, lf);
+    const NA2 = K + Delta;
+    let b = 0;
+    if (NA2 <= N) for (let g = 0; g < t; g++) b += hyperPMF(N, NA2, S, g, lf);
+    const mx = Math.max(a, Math.min(1, b));
+    if (mx < bestMax) {
+      bestMax = mx;
+      bestTau = t;
+    }
+  }
+  return { tau: bestTau, maxErr: bestMax };
+}
+function findOptimalDelta(N, K, S, eps, lf) {
+  const DELTA_MAX = N - K - 1;
+  for (let d = 1; d <= DELTA_MAX; d++) {
+    const NA2 = K + d;
+    let bestMax = Infinity, bestTau = null;
+    for (let t = 0; t <= S; t++) {
+      const a = pDetect(N, K, S, t, lf);
+      if (a > eps) continue;
+      let b = 0;
+      for (let g = 0; g < t; g++) b += hyperPMF(N, NA2, S, g, lf);
+      b = Math.min(1, b);
+      if (b <= eps) {
+        const mx = Math.max(a, b);
+        if (mx < bestMax) {
+          bestMax = mx;
+          bestTau = t;
+        }
+      }
+    }
+    if (bestTau !== null) return { delta: d, tau: bestTau, maxErr: bestMax };
+  }
+  return null;
+}
+function findUHalf(N, S, tau, lf) {
+  if (pDetect(N, N, S, tau, lf) < 0.5) return null;
+  if (pDetect(N, 0, S, tau, lf) >= 0.5) return 0;
+  let lo = 0, hi = N;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (pDetect(N, mid, S, tau, lf) >= 0.5) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+function sampleHypergeometric(N, NA, S) {
+  let pop = NA, rem = N, count = 0;
+  for (let i = 0; i < S; i++) {
+    if (Math.random() < pop / rem) {
+      count++;
+      pop--;
+    }
+    rem--;
+  }
+  return count;
+}
+function simNegBin(NB, p, trials, q) {
+  if (p <= 0 || p >= 1 || NB < 1) return null;
+  const avgDraws = NB / p;
+  if (avgDraws > 2e6) return null;
+  const maxDraws = Math.min(Math.ceil(20 * avgDraws), 5e6);
+  const samples = new Int32Array(trials);
+  for (let t = 0; t < trials; t++) {
+    let successes = 0, draws = 0;
+    while (successes < NB && draws < maxDraws) {
+      if (Math.random() < p) successes++;
+      draws++;
+    }
+    samples[t] = draws;
+  }
+  samples.sort();
+  return samples[Math.min(Math.ceil(q * trials) - 1, trials - 1)];
+}
+function simMajority(n, p, trials) {
+  if (p <= 0 || !isFinite(p)) return 0;
+  if (p >= 1) return 1;
+  const half = Math.ceil(n / 2);
+  let count = 0;
+  for (let t = 0; t < trials; t++) {
+    let s = 0;
+    for (let i = 0; i < n; i++) if (Math.random() < p) s++;
+    if (s >= half) count++;
+  }
+  return count / trials;
+}
+const C_DARK = {
+  bg: "#0d1117", panel: "#161b22", panel2: "#1c2128", border: "#30363d",
+  blue: "#58a6ff", red: "#f85149", green: "#3fb950", yellow: "#d29922",
+  purple: "#bc8cff", orange: "#e07b39", teal: "#39d0c8", text: "#e6edf3", muted: "#8b949e"
+};
+const C_LIGHT = {
+  bg: "#f0f4f8", panel: "#ffffff", panel2: "#e8eef4", border: "#c8d6e5",
+  blue: "#1565c0", red: "#c62828", green: "#2e7d32", yellow: "#e65100",
+  purple: "#6a1b9a", orange: "#bf360c", teal: "#00695c", text: "#1a1f2e", muted: "#546e7a"
+};
+const C = C_DARK;
+const MULTI_DELTA_COLORS = [C.blue, C.red, C.green, C.yellow, C.purple];
+const MULTI_S_COLORS = [C.blue, C.red, C.green, C.yellow];
+const TAB_DESC = {
+  errors: "Shows how the two error probabilities change as the acceptance threshold \u03C4 is varied. \u03B1(\u03C4) is the chance of wrongly accepting an unavailable block (safety risk). \u03B2(\u03C4,\u0394) is the chance of wrongly rejecting an available block (liveness cost). The best \u03C4 is where both are minimised.",
+  detect: "For each possible fraction of available chunks, shows how many validators out of n will successfully detect availability. The curve rises from near-zero (data unavailable) to near-n (data fully available). You can run a simulation to verify the theoretical curve.",
+  multidelta: "Same as the \u03B1 & \u03B2 view but with several values of \u0394 shown at once. Useful for comparing how the choice of \u0394 shifts the Type II error curve \u2014 a larger \u0394 makes it easier to confirm availability but requires more chunks to be present.",
+  sweep: "For each target error level \u03B5, finds the best threshold \u03C4* and shows the resulting error rate. Increasing the sample size S generally allows lower errors to be achieved.",
+  network: "Shows the probability that a majority of validators collectively make a wrong decision, given their individual error rates. Even if individual nodes have a noticeable error rate, a large enough group of independent validators makes collective mistakes extremely rare.",
+  wasted: "Shows the expected number of wasted slots per epoch caused by validators incorrectly rejecting available blocks. Plotted against the number of validators. Three curves show an optimistic bound, a conservative bound, and a worst-case estimate.",
+  chernoff: "Shows the probability that a majority of validators vote incorrectly, plotted against the number of validators. The left panel uses a log scale to show the upper bound; the right panel shows the lower bound on a linear scale. Simulation points should fall between the two curves.",
+  median: "Shows how long it takes for the chain to grow by one block (median time), depending on the per-slot error rate. Higher error rates cause more wasted slots and slow down chain growth.",
+  builder: "For a block builder collecting blob data, shows how many candidates need to be sampled to fill a block with the required number of accepted blobs, at a given confidence level. The cost is much higher when data is unavailable."
+};
+function TabDesc({ id }) {
+  const d = TAB_DESC[id];
+  if (!d) return null;
+  return /* @__PURE__ */ React.createElement("div", { style: {
+    fontSize: 11,
+    color: C.muted,
+    fontFamily: "monospace",
+    lineHeight: 1.6,
+    marginBottom: 14,
+    padding: "8px 12px",
+    borderRadius: 6,
+    background: "rgba(88,166,255,0.04)",
+    border: `1px solid ${C.border}`
+  } }, d);
+}
+const BUILDER_NB = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+const EPS_VALS = [0.1, 0.01, 1e-3, 1e-4];
+const EPS_LBLS = ["10\u207B\xB9", "10\u207B\xB2", "10\u207B\xB3", "10\u207B\u2074"];
+const EPS_COLS = [C.yellow, C.green, C.blue, C.purple];
+const PGREY_VALS = [0.2, 0.3, 0.5, 0.7];
+const PGREY_COLS = [C.blue, C.green, C.yellow, C.red];
+function Tip({ text }) {
+  const [pos, setPos] = React.useState(null);
+  const ref = React.useRef(null);
+  if (!text) return null;
+  const TIP_W = 260, TIP_PAD = 8;
+  function handleEnter() {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = r.left + r.width / 2 - TIP_W / 2;
+    left = Math.max(TIP_PAD, Math.min(left, vw - TIP_W - TIP_PAD));
+    setPos({ left, top: r.bottom + 6 });
+  }
+  return /* @__PURE__ */ React.createElement(
+    "span",
+    {
+      ref,
+      style: { position: "relative", display: "inline-flex", alignItems: "center", cursor: "default" },
+      onMouseEnter: handleEnter,
+      onMouseLeave: () => setPos(null)
+    },
+    /* @__PURE__ */ React.createElement("span", { style: {
+      fontSize: 10,
+      color: C.muted,
+      opacity: 0.6,
+      marginLeft: 3,
+      userSelect: "none",
+      border: `1px solid ${C.border}`,
+      borderRadius: "50%",
+      width: 13,
+      height: 13,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      lineHeight: 1
+    } }, "\u2139"),
+    pos && ReactDOM.createPortal(
+      /* @__PURE__ */ React.createElement("span", { style: {
+        position: "fixed",
+        left: pos.left,
+        top: pos.top,
+        width: TIP_W,
+        background: C.panel2,
+        border: `1px solid ${C.border}`,
+        borderRadius: 6,
+        padding: "8px 11px",
+        fontSize: 11,
+        color: C.text,
+        fontFamily: "monospace",
+        whiteSpace: "pre-wrap",
+        lineHeight: 1.6,
+        boxShadow: "0 4px 20px rgba(0,0,0,0.6)",
+        zIndex: 99999,
+        pointerEvents: "none"
+      } }, text),
+      document.body
+    )
+  );
+}
+function ParamInput({ label, tip, value, onChange, step, min, max }) {
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 3 } }, /* @__PURE__ */ React.createElement("label", { style: {
+    fontSize: 11,
+    color: C.muted,
+    fontFamily: "monospace",
+    letterSpacing: "0.04em",
+    display: "flex",
+    alignItems: "center",
+    gap: 2
+  } }, label, /* @__PURE__ */ React.createElement(Tip, { text: tip })), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "number",
+      value,
+      step: step || 1,
+      min,
+      max,
+      onChange: (e) => onChange(parseFloat(e.target.value)),
+      style: {
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderRadius: 5,
+        color: C.text,
+        fontFamily: "monospace",
+        fontSize: 12,
+        padding: "4px 8px",
+        width: 108,
+        outline: "none"
+      }
+    }
+  ));
+}
+function StatCard({ label, tip, value, color }) {
+  return /* @__PURE__ */ React.createElement("div", { style: { background: C.bg, border: `1px solid ${color || C.border}`, borderRadius: 7, padding: "8px 13px", minWidth: 150 } }, /* @__PURE__ */ React.createElement("div", { style: {
+    fontSize: 10,
+    color: C.muted,
+    fontFamily: "monospace",
+    marginBottom: 3,
+    display: "flex",
+    alignItems: "center",
+    gap: 2
+  } }, label, /* @__PURE__ */ React.createElement(Tip, { text: tip })), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 13, color: color || C.text, fontFamily: "monospace", fontWeight: "bold" } }, value));
+}
+function SecHead({ children }) {
+  return /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 14 } }, /* @__PURE__ */ React.createElement("div", { style: { width: 3, height: 16, background: C.blue, borderRadius: 2 } }), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 12, color: C.muted, fontFamily: "monospace", letterSpacing: "0.1em", textTransform: "uppercase" } }, children));
+}
+function Btn({ children, onClick, color, active }) {
+  return /* @__PURE__ */ React.createElement("button", { onClick, style: {
+    background: active ? color || C.blue : "transparent",
+    color: active ? "#000" : color || C.blue,
+    border: `1px solid ${color || C.blue}`,
+    borderRadius: 5,
+    padding: "5px 13px",
+    cursor: "pointer",
+    fontSize: 11,
+    fontFamily: "monospace",
+    fontWeight: active ? 700 : 400,
+    transition: "all 0.12s"
+  } }, children);
+}
+function CustomTT({ active, payload, label, labelFmt, valFmt }) {
+  if (!active || !(payload == null ? void 0 : payload.length)) return null;
+  return /* @__PURE__ */ React.createElement("div", { style: {
+    background: C.panel,
+    border: `1px solid ${C.border}`,
+    borderRadius: 7,
+    color: C.text,
+    fontFamily: "monospace",
+    fontSize: 11,
+    padding: "7px 11px"
+  } }, /* @__PURE__ */ React.createElement("div", { style: { color: C.muted, marginBottom: 3 } }, "x: ", labelFmt ? labelFmt(label) : label), payload.map((p, i) => /* @__PURE__ */ React.createElement("div", { key: i, style: { color: p.color || C.text } }, p.name, ": ", valFmt ? valFmt(p.value) : typeof p.value === "number" ? p.value.toPrecision(4) : p.value)));
+}
+const TABS_MAIN = [
+  { id: "detect", label: "Detection Prob." },
+  { id: "median", label: "Blockchain" },
+  { id: "wasted", label: "Wasted Slots" }
+];
+const TABS_TECH = [
+  { id: "errors", label: "\u03B1 & \u03B2 Curves" },
+  { id: "multidelta", label: "Multi-\u0394 Overlay" },
+  { id: "sweep", label: "\u03C4* vs \u03B5 Sweep" },
+  { id: "network", label: "Network Bounds" },
+  { id: "chernoff", label: "Chernoff Bound" },
+  { id: "builder", label: "Block Builder" }
+];
+const TABS = [...TABS_MAIN, ...TABS_TECH];
+function DACalculator() {
+  const [N_input, setN_input] = useState(2048);
+  const [darkMode, setDarkMode] = useState(true);
+  const [showTech, setShowTech] = useState(false);
+  const [r, setR] = useState(2);
+  const [S, setS] = useState(20);
+  const [tau, setTau] = useState(13);
+  const [Delta, setDelta] = useState(500);
+  const [nNodes, setNNodes] = useState(100);
+  const [epsilon, setEpsilon] = useState(1e-4);
+  const [f, setF] = useState(0.0333);
+  const [NB, setNB] = useState(1024);
+  const [T_epoch, setT_epoch] = useState(388800);
+  const [p_inv, setP_inv] = useState(0.6);
+  const [deltaList, setDeltaList] = useState("1,10,100,500");
+  const [sweepSList, setSweepSList] = useState("10,20,50,100");
+  const [simData, setSimData] = useState(null);
+  const [simRunning, setSimRunning] = useState(false);
+  const [simTrials, setSimTrials] = useState(10);
+  const [q_conf, setQ_conf] = useState(0.99);
+  const [bSimTrials, setBSimTrials] = useState(100);
+  const [builderSimData, setBuilderSimData] = useState(null);
+  const [bSimRunning, setBSimRunning] = useState(false);
+  const [errSimData, setErrSimData] = useState(null);
+  const [errSimRunning, setErrSimRunning] = useState(false);
+  const [mdSimData, setMdSimData] = useState(null);
+  const [mdSimRunning, setMdSimRunning] = useState(false);
+  const [netSimData, setNetSimData] = useState(null);
+  const [netSimRunning, setNetSimRunning] = useState(false);
+  const [wastedSimData, setWastedSimData] = useState(null);
+  const [wastedSimRunning, setWastedSimRunning] = useState(false);
+  const [chernSimData, setChernSimData] = useState(null);
+  const [chernSimRunning, setChernSimRunning] = useState(false);
+  const [tab, setTab] = useState("detect");
+  const N = N_input - (N_input % r) || r;
+  const K = Math.floor(N / r);
+  React.useEffect(() => {
+    document.body.style.background = darkMode ? "#0d1117" : "#f0f4f8";
+    document.body.style.color = darkMode ? "#e6edf3" : "#1a1f2e";
+  }, [darkMode]);
+  if (!showTech && ["errors","multidelta","sweep","network","chernoff","builder"].includes(tab)) { setTimeout(() => setTab("detect"), 0); }
+  const p_tight = parseFloat(Math.min(0.499, 1 - Math.pow(1 - epsilon, NB) + 0.1).toFixed(4));
+  const C = darkMode ? C_DARK : C_LIGHT;
+  const lf = useMemo(() => makeLogFact(Math.max(N, 500) + 20), [N]);
+  const stats = useMemo(() => {
+    const a = pDetect(N, K, S, tau, lf);
+    const NA2 = K + Delta;
+    let b = 0;
+    if (NA2 <= N) for (let g = 0; g < tau; g++) b += hyperPMF(N, NA2, S, g, lf);
+    b = Math.min(1, b);
+    const opt = findOptimalTau(N, K, Delta, S, lf);
+    return { alpha: a, beta: b, optTau: opt.tau, optMaxErr: opt.maxErr };
+  }, [N, K, S, tau, Delta, lf]);
+  const errorData = useMemo(() => Array.from({ length: S + 1 }, (_, t) => ({
+    tau: t,
+    alpha: (() => {
+      const v = log10Alpha(N, K, S, t, lf);
+      return isFinite(v) ? v : null;
+    })(),
+    beta: (() => {
+      const v = log10Beta(N, K, Delta, S, t, lf);
+      return isFinite(v) ? v : null;
+    })()
+  })), [N, K, S, Delta, lf]);
+  const detectTheory = useMemo(() => Array.from({ length: 301 }, (_, i) => {
+    const NA = Math.round(i / 300 * N);
+    return { x: parseFloat((NA / N).toFixed(4)), theory: parseFloat((pDetect(N, NA, S, tau, lf) * nNodes).toFixed(3)) };
+  }), [N, K, S, tau, nNodes, lf]);
+  const runSimulation = useCallback(() => {
+    setSimRunning(true);
+    setTimeout(() => {
+      const steps = 120;
+      const result = Array.from({ length: steps + 1 }, (_, i) => {
+        const NA = Math.round(i / steps * N);
+        let totalHits = 0;
+        for (let rep = 0; rep < nNodes; rep++) {
+          for (let v = 0; v < nNodes; v++) {
+            if (sampleHypergeometric(N, NA, S) >= tau) totalHits++;
+          }
+        }
+        return { x: parseFloat((NA / N).toFixed(4)), sim: parseFloat((totalHits / simTrials).toFixed(2)) };
+      });
+      setSimData(result);
+      setSimRunning(false);
+    }, 30);
+  }, [N, S, tau, nNodes, simTrials]);
+  const deltaArr = useMemo(
+    () => deltaList.split(",").map((s) => parseInt(s.trim())).filter((d) => !isNaN(d) && d > 0 && K + d <= N),
+    [deltaList, K, N]
+  );
+  const multiDeltaData = useMemo(() => Array.from({ length: S + 1 }, (_, t) => {
+    const row = { tau: t };
+    row["alpha"] = (() => {
+      const v = log10Alpha(N, K, S, t, lf);
+      return isFinite(v) ? v : null;
+    })();
+    deltaArr.forEach((d) => {
+      const v = log10Beta(N, K, d, S, t, lf);
+      row[`beta_${d}`] = isFinite(v) ? v : null;
+    });
+    return row;
+  }), [N, K, S, deltaArr, lf]);
+  const sweepSArr = useMemo(
+    () => sweepSList.split(",").map((s) => parseInt(s.trim())).filter((s) => !isNaN(s) && s > 0 && s <= N),
+    [sweepSList, N]
+  );
+  const sweepData = useMemo(() => {
+    const k_list = [1, 2, 3, 4, 5, 6];
+    const eps_values = k_list.map((k) => Math.pow(10, -k));
+    const alphaByTauByS = {};
+    sweepSArr.forEach((sv) => {
+      alphaByTauByS[sv] = Array.from({ length: sv + 1 }, (_, t) => pDetect(N, K, sv, t, lf));
+    });
+    return eps_values.map((eps) => {
+      const row = { log10eps: parseFloat(Math.log10(eps).toFixed(3)) };
+      sweepSArr.forEach((sv) => {
+        const alphas = alphaByTauByS[sv];
+        const DELTA_MAX = N - K - 1;
+        let found = false, resBestTau = null, resBestDelta = null;
+        for (let d = 1; d <= DELTA_MAX; d++) {
+          const NA2 = K + d;
+          let bestMax = Infinity, bestTau = null;
+          for (let t = 0; t <= sv; t++) {
+            if (alphas[t] > eps) continue;
+            let b = 0;
+            for (let g = 0; g < t; g++) b += hyperPMF(N, NA2, sv, g, lf);
+            b = Math.min(1, b);
+            if (b <= eps) {
+              const mx = Math.max(alphas[t], b);
+              if (mx < bestMax) {
+                bestMax = mx;
+                bestTau = t;
+              }
+            }
+          }
+          if (bestTau !== null) {
+            resBestDelta = d;
+            resBestTau = bestTau;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          row[`tau_S${sv}`] = null;
+          row[`delta_S${sv}`] = null;
+          row[`kdnS${sv}`] = null;
+          row[`uhalf_S${sv}`] = null;
+        } else {
+          const uHalf = findUHalf(N, sv, resBestTau, lf);
+          row[`tau_S${sv}`] = resBestTau;
+          row[`delta_S${sv}`] = resBestDelta;
+          row[`kdnS${sv}`] = parseFloat(((K + resBestDelta) / N).toFixed(4));
+          row[`uhalf_S${sv}`] = uHalf !== null ? parseFloat((uHalf / N).toFixed(4)) : null;
+        }
+      });
+      return row;
+    });
+  }, [N, K, sweepSArr, lf]);
+  const NB_VALS = [1, 10, 100, 1024];
+  const NB_COLORS = [C.yellow, C.green, C.red, C.blue];
+  const networkData = useMemo(() => Array.from({ length: 91 }, (_, i) => {
+    const n = i + 10, half = Math.ceil(n / 2);
+    const row = { n };
+    NB_VALS.forEach((nb) => {
+      const log10_u = n * Math.log10(2) + nb * half * Math.log10(epsilon);
+      row[`unrec_${nb}`] = isFinite(log10_u) ? parseFloat(log10_u.toFixed(3)) : null;
+      const fac = 1 - Math.pow(1 - epsilon, nb);
+      const log10_r = fac > 0 ? n * Math.log10(2) + half * Math.log10(fac) : null;
+      row[`rec_${nb}`] = log10_r !== null && isFinite(log10_r) ? parseFloat(log10_r.toFixed(3)) : null;
+    });
+    return row;
+  }), [epsilon]);
+  const wastedData = useMemo(() => Array.from({ length: 91 }, (_, i) => {
+    const n = i + 10, half = Math.ceil(n / 2);
+    const fac = 1 - Math.pow(1 - epsilon, NB);
+    const lv = Math.log10(T_epoch * f) + n * Math.log10(2) + half * Math.log10(fac > 0 ? fac : 1e-300);
+    const basic = Math.pow(10, lv);
+    const p_t = Math.min(p_tight, 0.499);
+    const base4 = 4 * p_t * (1 - p_t);
+    const tight = base4 > 0 && base4 < 1 ? T_epoch * f * Math.pow(base4, n / 2) : null;
+    const q_lb = (half - 1) / n;
+    let lower = null;
+    if (p_inv > 0.5 && q_lb > 0 && q_lb < 1) {
+      const kl = KL(q_lb, p_inv);
+      if (isFinite(kl) && kl >= 0) lower = parseFloat((T_epoch * f * Math.max(0, 1 - Math.exp(-n * kl))).toFixed(2));
+    }
+    const w = isFinite(basic) && basic > 0 ? parseFloat(basic.toFixed(2)) : null;
+    const tg = tight !== null && isFinite(tight) && tight > 0 ? parseFloat(tight.toFixed(4)) : null;
+    return {
+      n,
+      wasted: w,
+      tight: tg,
+      lower,
+      log10_wasted: w ? parseFloat(Math.log10(w).toFixed(3)) : null,
+      log10_tight: tg ? parseFloat(Math.log10(tg).toFixed(3)) : null,
+      log10_lower: lower && lower > 0 ? parseFloat(Math.log10(lower).toFixed(3)) : null
+    };
+  }), [epsilon, NB, T_epoch, f, p_tight, p_inv]);
+  const blockchainData = useMemo(() => {
+    const SPY = 31536e3;
+    return Array.from({ length: 91 }, (_, i) => {
+      const n = i + 10, half = Math.ceil(n / 2);
+      const log10_y1 = Math.log10(f) + n * Math.log10(2) + half * Math.log10(epsilon);
+      const inner = Math.LN2 * (Math.pow(2, -n) * Math.pow(epsilon, -half) - f) / f;
+      const y2_years = inner > 0 ? Math.ceil(inner) / SPY : null;
+      const log10_y2 = y2_years && y2_years > 0 ? Math.log10(y2_years) : null;
+      return {
+        n,
+        log10_y1: isFinite(log10_y1) ? parseFloat(log10_y1.toFixed(3)) : null,
+        log10_y2: log10_y2 !== null && isFinite(log10_y2) ? parseFloat(log10_y2.toFixed(3)) : null
+      };
+    });
+  }, [epsilon, f]);
+  const chernoffData = useMemo(() => Array.from({ length: 91 }, (_, i) => {
+    const n = i + 10, q = (Math.ceil(n / 2) - 1) / n;
+    let tight_upper = null, log10_tight = null;
+    if (p_tight > 0 && p_tight < 0.5) {
+      const kl = KL(0.5, p_tight);
+      if (isFinite(kl) && kl >= 0) {
+        tight_upper = parseFloat(Math.exp(-n * kl).toFixed(8));
+        const lt = -n * kl * Math.LOG10E;
+        log10_tight = isFinite(lt) ? parseFloat(lt.toFixed(3)) : null;
+      }
+    }
+    let lower_bound = null;
+    if (p_inv > 0.5 && q > 0 && q < 1) {
+      const kl = KL(q, p_inv);
+      if (isFinite(kl) && kl >= 0) lower_bound = parseFloat(Math.max(0, 1 - Math.exp(-n * kl)).toFixed(8));
+    }
+    return { n, tight_upper, log10_tight, lower_bound };
+  }), [p_tight, p_inv]);
+  const builderData = useMemo(() => {
+    const zq = zQuantile(q_conf);
+    return BUILDER_NB.map((NB2) => {
+      const row = { NB: NB2 };
+      EPS_VALS.forEach((eps, ki) => {
+        const approx = negBinApprox(NB2, eps, zq);
+        const exact = negBinExact(NB2, eps, q_conf);
+        row[`u_approx_${ki}`] = approx ? parseFloat(approx.toFixed(1)) : null;
+        row[`u_exact_${ki}`] = exact ? parseFloat(exact) : null;
+        row[`u_log10_${ki}`] = approx && approx > 0 ? parseFloat(Math.log10(approx).toFixed(3)) : null;
+      });
+      EPS_VALS.forEach((eps, ki) => {
+        const approx = negBinApprox(NB2, 1 - eps, zq);
+        row[`r_approx_${ki}`] = approx ? parseFloat(approx.toFixed(1)) : null;
+      });
+      PGREY_VALS.forEach((p, pi) => {
+        const approx = negBinApprox(NB2, p, zq);
+        row[`g_approx_${pi}`] = approx ? parseFloat(approx.toFixed(1)) : null;
+        row[`g_log10_${pi}`] = approx && approx > 0 ? parseFloat(Math.log10(approx).toFixed(3)) : null;
+      });
+      return row;
+    });
+  }, [q_conf]);
+  const runBuilderSim = useCallback(() => {
+    setBSimRunning(true);
+    setTimeout(() => {
+      const zq = zQuantile(q_conf);
+      const result = BUILDER_NB.map((nb) => {
+        const row = { NB: nb };
+        PGREY_VALS.forEach((p, pi) => {
+          const v = simNegBin(nb, p, bSimTrials, q_conf);
+          row[`g_sim_${pi}`] = v ? parseFloat(v) : null;
+          row[`g_sim_log10_${pi}`] = v && v > 0 ? parseFloat(Math.log10(v).toFixed(3)) : null;
+        });
+        EPS_VALS.forEach((eps, ki) => {
+          const v = simNegBin(nb, 1 - eps, bSimTrials, q_conf);
+          row[`r_sim_${ki}`] = v ? parseFloat(v) : null;
+        });
+        const v_u = simNegBin(nb, EPS_VALS[0], bSimTrials, q_conf);
+        row[`u_sim_log10_0`] = v_u && v_u > 0 ? parseFloat(Math.log10(v_u).toFixed(3)) : null;
+        return row;
+      });
+      setBuilderSimData(result);
+      setBSimRunning(false);
+    }, 30);
+  }, [q_conf, bSimTrials]);
+  const builderMerged = useMemo(() => {
+    if (!builderSimData) return builderData;
+    const simMap = new Map(builderSimData.map((d) => [d.NB, d]));
+    return builderData.map((d) => __spreadValues(__spreadValues({}, d), simMap.get(d.NB) || {}));
+  }, [builderData, builderSimData]);
+  const runErrSim = useCallback(() => {
+    setErrSimRunning(true);
+    setTimeout(() => {
+      const result = Array.from({ length: S + 1 }, (_, t) => {
+        let ah = 0, bh = 0;
+        for (let i = 0; i < simTrials; i++) {
+          if (sampleHypergeometric(N, K, S) >= t) ah++;
+          if (sampleHypergeometric(N, K + Delta, S) < t) bh++;
+        }
+        const af = ah / simTrials, bf = bh / simTrials;
+        return {
+          tau: t,
+          alpha_sim: af > 0 ? parseFloat(Math.log10(af).toFixed(3)) : null,
+          beta_sim: bf > 0 ? parseFloat(Math.log10(bf).toFixed(3)) : null
+        };
+      });
+      setErrSimData(result);
+      setErrSimRunning(false);
+    }, 30);
+  }, [N, K, Delta, S, simTrials]);
+  const errorDataMerged = useMemo(() => {
+    if (!errSimData) return errorData;
+    const m = new Map(errSimData.map((d) => [d.tau, d]));
+    return errorData.map((d) => __spreadValues(__spreadValues({}, d), m.get(d.tau) || {}));
+  }, [errorData, errSimData]);
+  const runMdSim = useCallback(() => {
+    setMdSimRunning(true);
+    setTimeout(() => {
+      const result = Array.from({ length: S + 1 }, (_, t) => {
+        let ah = 0;
+        const bh = {};
+        deltaArr.forEach((d) => {
+          bh[d] = 0;
+        });
+        for (let i = 0; i < simTrials; i++) {
+          if (sampleHypergeometric(N, K, S) >= t) ah++;
+          deltaArr.forEach((d) => {
+            if (sampleHypergeometric(N, K + d, S) < t) bh[d]++;
+          });
+        }
+        const af = ah / simTrials;
+        const row = { tau: t, alpha_sim: af > 0 ? parseFloat(Math.log10(af).toFixed(3)) : null };
+        deltaArr.forEach((d) => {
+          const bf = bh[d] / simTrials;
+          row[`beta_sim_${d}`] = bf > 0 ? parseFloat(Math.log10(bf).toFixed(3)) : null;
+        });
+        return row;
+      });
+      setMdSimData(result);
+      setMdSimRunning(false);
+    }, 30);
+  }, [N, K, deltaArr, S, simTrials]);
+  const multiDeltaMerged = useMemo(() => {
+    if (!mdSimData) return multiDeltaData;
+    const m = new Map(mdSimData.map((d) => [d.tau, d]));
+    return multiDeltaData.map((d) => __spreadValues(__spreadValues({}, d), m.get(d.tau) || {}));
+  }, [multiDeltaData, mdSimData]);
+  const runNetSim = useCallback(() => {
+    setNetSimRunning(true);
+    setTimeout(() => {
+      const result = Array.from({ length: 91 }, (_, i) => {
+        const n = i + 10;
+        const row = { n };
+        NB_VALS.forEach((nb) => {
+          const pu = Math.pow(epsilon, nb), pr = 1 - Math.pow(1 - epsilon, nb);
+          const su = pu > 1e-15 ? simMajority(n, pu, simTrials) : 0;
+          const sr = simMajority(n, pr, simTrials);
+          row[`unrec_sim_${nb}`] = su > 0 ? parseFloat(Math.log10(su).toFixed(3)) : null;
+          row[`rec_sim_${nb}`] = sr > 0 ? parseFloat(Math.log10(sr).toFixed(3)) : null;
+        });
+        return row;
+      });
+      setNetSimData(result);
+      setNetSimRunning(false);
+    }, 30);
+  }, [epsilon, simTrials]);
+  const networkMerged = useMemo(() => {
+    if (!netSimData) return networkData;
+    const m = new Map(netSimData.map((d) => [d.n, d]));
+    return networkData.map((d) => __spreadValues(__spreadValues({}, d), m.get(d.n) || {}));
+  }, [networkData, netSimData]);
+  const runWastedSim = useCallback(() => {
+    setWastedSimRunning(true);
+    setTimeout(() => {
+      const pb = 1 - Math.pow(1 - epsilon, NB), pt = Math.min(p_tight, 0.499), pi = p_inv > 0.5 ? p_inv : null;
+      const result = Array.from({ length: 91 }, (_, i) => {
+        const n = i + 10;
+        const s2 = simMajority(n, pb, simTrials), s3 = simMajority(n, pt, simTrials), s4 = pi ? simMajority(n, pi, simTrials) : null;
+        const w2 = T_epoch * f * s2, w3 = T_epoch * f * s3, w4 = pi ? T_epoch * f * s4 : null;
+        return {
+          n,
+          log10_wasted_sim: w2 > 0 ? parseFloat(Math.log10(w2).toFixed(3)) : null,
+          log10_tight_sim: w3 > 0 ? parseFloat(Math.log10(w3).toFixed(3)) : null,
+          log10_lower_sim: w4 && w4 > 0 ? parseFloat(Math.log10(w4).toFixed(3)) : null
+        };
+      });
+      setWastedSimData(result);
+      setWastedSimRunning(false);
+    }, 30);
+  }, [epsilon, NB, T_epoch, f, p_tight, p_inv, simTrials]);
+  const wastedMerged = useMemo(() => {
+    if (!wastedSimData) return wastedData;
+    const m = new Map(wastedSimData.map((d) => [d.n, d]));
+    return wastedData.map((d) => __spreadValues(__spreadValues({}, d), m.get(d.n) || {}));
+  }, [wastedData, wastedSimData]);
+  const runChernSim = useCallback(() => {
+    setChernSimRunning(true);
+    setTimeout(() => {
+      const pt = p_tight > 0 && p_tight < 0.5 ? p_tight : null, pi = p_inv > 0.5 ? p_inv : null;
+      const result = Array.from({ length: 91 }, (_, i) => {
+        const n = i + 10;
+        const s3 = pt ? simMajority(n, pt, simTrials) : null, s4 = pi ? simMajority(n, pi, simTrials) : null;
+        return {
+          n,
+          sim_tight: s3 && s3 > 0 ? parseFloat(Math.log10(s3).toFixed(3)) : null,
+          sim_lower: s4 !== null ? parseFloat(s4.toFixed(6)) : null
+        };
+      });
+      setChernSimData(result);
+      setChernSimRunning(false);
+    }, 30);
+  }, [p_tight, p_inv, simTrials]);
+  const chernMerged = useMemo(() => {
+    if (!chernSimData) return chernoffData;
+    const m = new Map(chernSimData.map((d) => [d.n, d]));
+    return chernoffData.map((d) => __spreadValues(__spreadValues({}, d), m.get(d.n) || {}));
+  }, [chernoffData, chernSimData]);
+  const detectMerged = useMemo(() => {
+    if (!simData) return detectTheory;
+    const map = new Map(simData.map((d) => [d.x, d.sim]));
+    return detectTheory.map((d) => {
+      var _a;
+      return __spreadProps(__spreadValues({}, d), { sim: (_a = map.get(d.x)) != null ? _a : null });
+    });
+  }, [detectTheory, simData]);
+  const KN = K / N;
+  const KDN = Math.min((K + Delta) / N, 1);
+  const ML = 55, MR = 20;
+  return /* @__PURE__ */ React.createElement("div", { style: { background: C.bg, minHeight: "100vh", color: C.text, padding: "20px 18px" } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 22 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, letterSpacing: "0.18em", color: C.muted, fontFamily: "monospace", marginBottom: 5 } }, "DATA AVAILABILITY SAMPLING \u2014 PARAMETRIC CALCULATOR"), /* @__PURE__ */ React.createElement("h1", { style: { margin: 0, fontSize: 21, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" } }, "DA Sampling Calculator"), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4, fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "N\u00A0=\u00A0r\xB7K\u00A0=\u00A0", /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, N), "\u00A0\xB7\u00A0 K/N\u00A0=\u00A0", /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, (K/N).toFixed(3)), "\u00A0\xB7\u00A0 Recoverable if N_A\u00A0\u2265\u00A0", /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, K + 1)),  /* @__PURE__ */ React.createElement("button", { onClick: () => setDarkMode((d) => !d), style: { position: "fixed", top: 16, right: 18, background: "transparent", border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 11px", cursor: "pointer", fontSize: 11, color: C.muted, fontFamily: "monospace", zIndex: 1e3, transition: "all 0.15s" } }, darkMode ? "\u2600 Light" : "\u25D7 Dark"), /* @__PURE__ */ React.createElement("div", { style: { background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 20px", marginBottom: 16 } }, /* @__PURE__ */ React.createElement(SecHead, null, "DA Sampling Parameters"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "N (total chunks)",
+      tip: "Total number of chunks after erasure coding.\nK = N/r is calculated automatically.\nLarger N gives finer sampling granularity.",
+      value: N_input,
+      onChange: (v) => setN_input(Math.max(2, Math.round(v))),
+      step: 1,
+      min: 2
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "r",
+      tip: "How many times the data is expanded through erasure coding.\nK = N/r is the recovery threshold.\nHigher redundancy makes it easier to detect\nwhen chunks are being withheld,\nbut requires more storage across the network.",
+      value: r,
+      onChange: setR,
+      min: 1,
+      max: 16
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: 3 } },
+    /* @__PURE__ */ React.createElement(
+      "label",
+      { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", letterSpacing: "0.04em", display: "flex", alignItems: "center", gap: 2 } },
+      "K = N/r"
+    ),
+    /* @__PURE__ */ React.createElement(
+      "div",
+      { style: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 5, color: C.blue, fontFamily: "monospace", fontSize: 12, padding: "4px 8px", width: 108, minHeight: 28, display: "flex", alignItems: "center" } },
+      K
+    )
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "S (sample)",
+      tip: "Number of random chunks each validator downloads\nand checks per block.\nMore samples give better detection accuracy\nbut increase bandwidth cost for each node.",
+      value: S,
+      onChange: setS,
+      min: 1,
+      max: N
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "\u03C4 (threshold)",
+      tip: "Minimum number of successful samples\nrequired for a validator to declare the block available.\nRequiring all samples to succeed makes the system fragile\nto temporary network issues. Allowing a small number\nof failures makes it more robust without losing security.",
+      value: tau,
+      onChange: setTau,
+      min: 0,
+      max: S
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "\u0394 (margin)",
+      tip: "Defines how far above the recovery threshold a block\nmust be before validators accept it as available.\nA small value means validators accept blocks that are\nonly just recoverable, which risks false positives.\nA large value adds safety margin but may cause\nsome valid blocks to be unnecessarily rejected.",
+      value: Delta,
+      onChange: setDelta,
+      min: 1,
+      max: N - K
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "\u03B5 (error bound)",
+      tip: "The maximum acceptable probability for either type of error.\nType I: accidentally accepting data that cannot be recovered.\nType II: accidentally rejecting data that is recoverable.\nLower values give stronger guarantees but\nmay require larger samples or wider margins.",
+      value: epsilon,
+      onChange: setEpsilon,
+      step: 1e-4,
+      min: 1e-10,
+      max: 1
+    }
+  ), /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: false, onClick: () => setTau(stats.optTau) }, "Auto \u03C4*(\u0394=", Delta, ") = ", stats.optTau)), /* @__PURE__ */ React.createElement("div", { style: { height: 1, background: C.border, margin: "14px 0" } }), /* @__PURE__ */ React.createElement(SecHead, null, "Blockchain / Network Parameters"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end" } }, /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "n (nodes)",
+      tip: "Number of validators that independently check availability.\nThe network accepts a block only when\na majority of validators agree it is available.\nMore validators make it much harder for an attacker\nto fool the whole network simultaneously.",
+      value: nNodes,
+      onChange: setNNodes,
+      min: 1
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "f (slot prob)",
+      tip: "Fraction of time slots that contain a non-empty block.\nUsed to estimate how many blocks per epoch\nare subject to availability checking.",
+      value: f,
+      onChange: setF,
+      step: 1e-3,
+      min: 0,
+      max: 1
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "N_B (blobs)",
+      tip: "Number of data blobs a block builder needs to include\nin each block. A higher number means the builder\nmust sample more candidates to fill the block,\nwhich increases the cost of building blocks.",
+      value: NB,
+      onChange: setNB,
+      min: 1,
+      max: 1024
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "T (slots/epoch)",
+      tip: "Total number of time slots in one epoch.\nUsed to convert per-slot probabilities\ninto expected counts per epoch.",
+      value: T_epoch,
+      onChange: setT_epoch,
+      min: 1
+    }
+  ), /* @__PURE__ */ React.createElement(
+    ParamInput,
+    {
+      label: "p (block inval.)",
+      tip: "A reference probability used for the lower bound analysis.\nRepresents the chance that a validator incorrectly\nvotes 'available' when data is truly unavailable.\nMust be above 0.5 for the majority vote model to apply.",
+      value: p_inv,
+      onChange: setP_inv,
+      step: 0.05,
+      min: 0.01,
+      max: 0.99
+    }
+  ), /* @__PURE__ */ React.createElement(
+    "div",
+    { style: { display: "flex", flexDirection: "column", gap: 3 } },
+    /* @__PURE__ */ React.createElement("label", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", letterSpacing: "0.04em" } }, "p_tight (auto)"),
+    /* @__PURE__ */ React.createElement("div", { style: { background: C.bg, border: `1px solid ${C.border}`, borderRadius: 5, color: C.teal, fontFamily: "monospace", fontSize: 12, padding: "4px 8px", width: 108, minHeight: 28, display: "flex", alignItems: "center" } }, p_tight)
+  ))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 } }, /* @__PURE__ */ React.createElement(
+    StatCard,
+    {
+      label: "\u03B1(\u03C4) \u2014 Type I",
+      tip: "Probability that a validator incorrectly accepts a block\nwhose data cannot actually be recovered.\nThis is the safety error \u2014 lower is better.",
+      value: stats.alpha.toExponential(3),
+      color: C.blue
+    }
+  ), /* @__PURE__ */ React.createElement(
+    StatCard,
+    {
+      label: "\u03B2(\u03C4,\u0394) \u2014 Type II",
+      tip: "Probability that a validator incorrectly rejects a block\nwhose data is actually recoverable.\nThis is the liveness error \u2014 lower means fewer wasted slots.",
+      value: stats.beta.toExponential(3),
+      color: C.red
+    }
+  ), /* @__PURE__ */ React.createElement(
+    StatCard,
+    {
+      label: "Optimal \u03C4*",
+      tip: "Best threshold for the CURRENT \u0394.\nFor the globally optimal (\u0394*, \u03C4*) pair that minimises both errors simultaneously, see Optimal \u0394*(\u03B5) card.",
+      value: `\u03C4*=${stats.optTau}  (\u0394=${Delta}, \u03B5*\u2248${stats.optMaxErr.toExponential(1)})`,
+      color: C.green
+    }
+  ), /* @__PURE__ */ React.createElement(
+    StatCard,
+    {
+      label: "Grey zone \u0394/N",
+      tip: "The fraction of all possible availability levels\nthat fall in the ambiguous grey zone \u2014\nrecoverable data that might still be rejected.\nA smaller grey zone means more precise classification.",
+      value: `${((KDN - KN) * 100).toFixed(1)}%`,
+      color: C.purple
+    }
+  ), (() => {
+    const optD = findOptimalDelta(N, K, S, epsilon, lf);
+    return /* @__PURE__ */ React.createElement(StatCard, {
+      label: "Optimal \u0394*(\u03B5)",
+      tip: "Smallest \u0394 where both errors are bounded by \u03B5.\nClick Auto \u0394*(\u03B5) to apply.",
+      value: optD ? `${optD.delta}  (\u03C4=${optD.tau})` : "\u2014",
+      color: C.teal
+    });
+  })(), /* @__PURE__ */ React.createElement(
+    StatCard,
+    {
+      label: "Avg wasted slots/epoch",
+      tip: "Upper bound on the expected number of wasted slots per epoch.\nFormula (Code 2): W = T\u00b7f\u00b7 2\u207f \u00b7 (1\u2212(1\u2212\u03b5)^N_B)^\u2308n/2\u2309\n\nT\u00b7f = avg non-empty slots per epoch (only these can be wasted).\n2\u207f\u00b7(...)^\u2308n/2\u2309 = probability that a majority of n validators wrongly reject a recoverable block.\nSo W = (non-empty slots) \u00d7 P(majority wrongly rejects).\n\nA smaller W is better. W drops quickly as n (validators) increases.",
+      value: (() => {
+        const half = Math.ceil(nNodes / 2);
+        const fac = 1 - Math.pow(1 - epsilon, NB);
+        const w = T_epoch * f * Math.pow(2, nNodes) * Math.pow(fac > 0 ? fac : 1e-300, half);
+        return isFinite(w) && w > 0 ? (w < 0.01 ? w.toExponential(2) : w.toFixed(2)) : "\u22480";
+      })(),
+      color: C.yellow
+    }
+  ), /* @__PURE__ */ React.createElement(
+    StatCard,
+    {
+      label: "Wasted / non-empty",
+      tip: "Ratio of expected wasted slots to expected non-empty slots per epoch.\nFormula: W / (T\u00b7f) = 2\u207f \u00b7 (1\u2212(1\u2212\u03b5)^N_B)^\u2308n/2\u2309\n\nThis is the per-block probability that a majority wrongly rejects a recoverable block.\nIt is independent of f and T \u2014 it only depends on n, \u03b5, and N_B.\n\nA small ratio (e.g. < 1%) means the protocol wastes fewer than 1 in 100 valid blocks.\nThis ratio should be kept well below \u03b5 in a well-configured system.",
+      value: (() => {
+        const half = Math.ceil(nNodes / 2);
+        const fac = 1 - Math.pow(1 - epsilon, NB);
+        const ratio = Math.pow(2, nNodes) * Math.pow(fac > 0 ? fac : 1e-300, half);
+        return isFinite(ratio) && ratio > 0 ? ratio.toExponential(2) : "\u22480";
+      })(),
+      color: C.orange
+    }
+  )), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", marginBottom: 14 } },
+    /* @__PURE__ */ React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+      /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" } },
+        TABS_MAIN.map((t) => /* @__PURE__ */ React.createElement("button", { key: t.id, onClick: () => { setShowTech(false); setTab(t.id); }, style: {
+          background: tab === t.id && !showTech ? C.blue : C.panel,
+          color: tab === t.id && !showTech ? "#fff" : C.text,
+          border: `1px solid ${tab === t.id && !showTech ? C.blue : C.border}`,
+          borderRadius: 6, padding: "6px 15px", cursor: "pointer",
+          fontSize: 12, fontFamily: "monospace", fontWeight: tab === t.id && !showTech ? 700 : 400, transition: "all 0.12s"
+        } }, t.label)),
+        /* @__PURE__ */ React.createElement("div", { style: { width: 1, height: 24, background: C.border, margin: "0 4px" } }),
+        /* @__PURE__ */ React.createElement("button", { onClick: () => { setShowTech((v) => !v); if (!showTech) setTab("errors"); else setTab("detect"); }, style: {
+          background: showTech ? C.purple : "transparent",
+          color: showTech ? "#fff" : C.muted,
+          border: `1px solid ${showTech ? C.purple : C.border}`,
+          borderRadius: 6, padding: "6px 15px", cursor: "pointer",
+          fontSize: 12, fontFamily: "monospace", fontWeight: showTech ? 700 : 400, transition: "all 0.12s"
+        } }, showTech ? "\u25BC Technical" : "\u25B6 Technical")
+      ),
+      showTech && /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", paddingLeft: 4 } },
+        TABS_TECH.map((t) => /* @__PURE__ */ React.createElement("button", { key: t.id, onClick: () => setTab(t.id), style: {
+          background: tab === t.id ? C.purple : C.panel,
+          color: tab === t.id ? "#fff" : C.muted,
+          border: `1px solid ${tab === t.id ? C.purple : C.border}`,
+          borderRadius: 6, padding: "5px 13px", cursor: "pointer",
+          fontSize: 11, fontFamily: "monospace", fontWeight: tab === t.id ? 700 : 400, transition: "all 0.12s"
+        } }, t.label))
+      )
+    ), /* @__PURE__ */ React.createElement("div", { style: { background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "18px 14px" } }, /* @__PURE__ */ React.createElement(TabDesc, { id: tab }), tab === "errors" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "\u03B1(\u03C4) and \u03B2(\u03C4,\u0394) vs threshold \u03C4 \u2014 log\u2081\u2080 scale"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 10 } }, "K=", K, ", r=", r, ", N=", N, ", S=", S, ", \u0394=", Delta, "\xA0\xB7\xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "\u03B1(\u03C4)"), " = Type I (false positive at N_A=K) \xA0\xB7\xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "\u03B2(\u03C4,\u0394)"), " = Type II (miss at N_A=K+\u0394)"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, nNodes, " draws/\u03C4"), /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!errSimData, onClick: runErrSim }, errSimRunning ? "Running\u2026" : errSimData ? "Re-run Simulation" : "\u25B6 Run Simulation"), errSimData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setErrSimData(null) }, "\u2715 Clear"), errSimData && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.green, fontFamily: "monospace" } }, "\u2713 Squares = empirical \u03B1/\u03B2 from ", simTrials, " hypergeometric draws/\u03C4")), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 380 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: errorDataMerged, margin: { left: 20, right: 20, top: 10, bottom: 22 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "tau",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "\u03C4", position: "insideBottom", offset: -10, fill: C.muted, fontSize: 13 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(prob)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `\u03C4=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(2)})` }) }), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 11, fontFamily: "monospace" } }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      x: tau,
+      stroke: C.green,
+      strokeDasharray: "5 3",
+      label: { value: `\u03C4=${tau}`, fill: C.green, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Line, { type: "monotone", dataKey: "alpha", name: "\u03B1 theory", stroke: C.blue, dot: false, strokeWidth: 2, connectNulls: false }), /* @__PURE__ */ React.createElement(Line, { type: "monotone", dataKey: "beta", name: "\u03B2 theory", stroke: C.red, dot: false, strokeWidth: 2, connectNulls: false }), errSimData && /* @__PURE__ */ React.createElement(Scatter, { dataKey: "alpha_sim", name: "\u03B1 sim", fill: C.blue, shape: (p) => {
+    const { cx, cy } = p;
+    if (!cx || !cy) return null;
+    return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.blue, opacity: 0.85 });
+  } }), errSimData && /* @__PURE__ */ React.createElement(Scatter, { dataKey: "beta_sim", name: "\u03B2 sim", fill: C.red, shape: (p) => {
+    const { cx, cy } = p;
+    if (!cx || !cy) return null;
+    return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.red, opacity: 0.85 });
+  } })))), tab === "detect" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Detection probability vs N_A/N"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "n=", nNodes, " repetitions"), /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!simData, onClick: runSimulation }, simRunning ? "Running\u2026" : simData ? "Re-run Simulation" : "\u25B6 Run Simulation"), simData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setSimData(null) }, "\u2715 Clear"), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "\u03C4=", tau, " \xB7 S=", S, " \xB7 n=", nNodes)), simData && /* @__PURE__ */ React.createElement("div", { style: {
+    marginBottom: 10,
+    padding: "5px 12px",
+    borderRadius: 5,
+    background: "rgba(63,185,80,0.08)",
+    border: `1px solid ${C.green}`,
+    fontSize: 11,
+    fontFamily: "monospace",
+    color: C.green
+  } }, "\u2713 Simulation: ", simTrials, " \xD7 ", nNodes, " validator experiments per point \u2014 avg count plotted. Theory and simulation now share the same Y-axis scale."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 18, marginBottom: 12, flexWrap: "wrap", fontSize: 11, fontFamily: "monospace", color: C.muted } }, [
+    { color: C.blue, sw: 2.5, dash: "none", label: `Theory: n \xD7 P(n_A \u2265 \u03C4 | N_A), n=${nNodes}` },
+    simData && { color: C.red, dot: true, label: `Simulation: avg detections / ${nNodes} validators (${simTrials} reps)` },
+    { color: C.red, sw: 1.5, dash: "7 4", label: `K/N = ${KN.toFixed(3)}` },
+    { color: C.blue, sw: 1.5, dash: "7 4", label: `(K+\u0394)/N = ${KDN.toFixed(3)}` },
+    { color: "#666", sw: 1, dash: "none", label: "n/2" }
+  ].filter(Boolean).map(({ color, sw, dash, label, dot }) => /* @__PURE__ */ React.createElement("div", { key: label, style: { display: "flex", alignItems: "center", gap: 5 } }, dot ? /* @__PURE__ */ React.createElement("svg", { width: 14, height: 10 }, /* @__PURE__ */ React.createElement("rect", { x: 4, y: 2, width: 6, height: 6, fill: color })) : /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: color, strokeWidth: sw, strokeDasharray: dash })), /* @__PURE__ */ React.createElement("span", null, label)))), /* @__PURE__ */ React.createElement("div", { style: { position: "relative" } }, /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 440 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: detectMerged, margin: { left: ML, right: MR, top: 16, bottom: 36 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "x",
+      stroke: C.muted,
+      type: "number",
+      domain: [0, 1],
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => v.toFixed(2),
+      label: { value: "N_A / N", position: "insideBottom", offset: -18, fill: C.muted, fontSize: 13 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      domain: [0, nNodes],
+      label: { value: "Count of successes out of n", angle: -90, position: "insideLeft", offset: 10, fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => v == null ? void 0 : v.toFixed(3), valFmt: (v) => v == null ? void 0 : v.toFixed(2) }) }), /* @__PURE__ */ React.createElement(ReferenceArea, { x1: 0, x2: KN, fill: C.red, fillOpacity: 0.07, stroke: "none" }), /* @__PURE__ */ React.createElement(ReferenceArea, { x1: KN, x2: KDN, fill: C.purple, fillOpacity: 0.07, stroke: "none" }), /* @__PURE__ */ React.createElement(ReferenceArea, { x1: KDN, x2: 1, fill: C.green, fillOpacity: 0.07, stroke: "none" }), /* @__PURE__ */ React.createElement(ReferenceLine, { x: KN, stroke: C.red, strokeDasharray: "7 4", strokeWidth: 1.8 }), /* @__PURE__ */ React.createElement(ReferenceLine, { x: KDN, stroke: C.blue, strokeDasharray: "7 4", strokeWidth: 1.8 }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      y: nNodes / 2,
+      stroke: "#555",
+      strokeWidth: 1,
+      label: { value: "n/2", position: "insideRight", fill: "#666", fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "theory",
+      name: "Theory",
+      stroke: C.blue,
+      dot: false,
+      strokeWidth: 2.5,
+      connectNulls: true
+    }
+  ), simData && /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      dataKey: "sim",
+      name: "Simulation",
+      fill: C.red,
+      shape: (props) => {
+        const { cx, cy } = props;
+        if (cx == null || cy == null) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 3, y: cy - 3, width: 6, height: 6, fill: C.red, opacity: 0.85 });
+      }
+    }
+  ))), /* @__PURE__ */ React.createElement("div", { style: {
+    position: "absolute",
+    left: `calc(${ML}px + ${KN / 2 * 100}% * (1 - ${ML + MR}px / 100%))`,
+    bottom: 62,
+    transform: "translateX(-50%)",
+    background: C.panel,
+    border: `1.5px solid ${C.red}`,
+    borderRadius: 6,
+    padding: "5px 10px",
+    fontSize: 11,
+    fontFamily: "monospace",
+    color: C.red,
+    pointerEvents: "none",
+    whiteSpace: "nowrap",
+    zIndex: 10
+  } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, "Data is unrecover."), /* @__PURE__ */ React.createElement("div", { style: { color: C.muted } }, "with prob. \u2265 1\u2212\u03B5")), /* @__PURE__ */ React.createElement("div", { style: {
+    position: "absolute",
+    left: `calc(${ML}px + ${(KN + KDN) / 2 * 100}% * (1 - ${ML + MR}px / 100%))`,
+    top: "40%",
+    transform: "translateX(-50%)",
+    background: C.panel,
+    border: `1.5px solid ${C.purple}`,
+    borderRadius: 6,
+    padding: "5px 10px",
+    fontSize: 11,
+    fontFamily: "monospace",
+    color: C.purple,
+    pointerEvents: "none",
+    whiteSpace: "nowrap",
+    zIndex: 10
+  } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, "Data is recover."), /* @__PURE__ */ React.createElement("div", { style: { color: C.muted } }, "with prob. \u2208 (\u03B5, 1\u2212\u03B5)")), /* @__PURE__ */ React.createElement("div", { style: {
+    position: "absolute",
+    left: `calc(${ML}px + ${(KDN + 1) / 2 * 100}% * (1 - ${ML + MR}px / 100%))`,
+    top: 26,
+    transform: "translateX(-50%)",
+    background: C.panel,
+    border: `1.5px solid ${C.blue}`,
+    borderRadius: 6,
+    padding: "5px 10px",
+    fontSize: 11,
+    fontFamily: "monospace",
+    color: C.blue,
+    pointerEvents: "none",
+    whiteSpace: "nowrap",
+    zIndex: 10
+  } }, /* @__PURE__ */ React.createElement("div", { style: { fontWeight: 700 } }, "Data is recover."), /* @__PURE__ */ React.createElement("div", { style: { color: C.muted } }, "with prob. \u2265 1\u2212\u03B5"))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(StatCard, { label: "\u03B1(\u03C4)", value: stats.alpha.toExponential(3), color: C.red }), /* @__PURE__ */ React.createElement(StatCard, { label: "\u03B2(\u03C4,\u0394)", value: stats.beta.toExponential(3), color: C.blue }), /* @__PURE__ */ React.createElement(StatCard, { label: "Grey zone \u0394/N", value: `${((KDN - KN) * 100).toFixed(1)}%`, color: C.purple }))), tab === "multidelta" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "\u03B1(\u03C4) and \u03B2(\u03C4,\u0394) for multiple \u0394 values \u2014 log\u2081\u2080 scale"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "\u0394 values (comma-separated):"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      value: deltaList,
+      onChange: (e) => setDeltaList(e.target.value),
+      style: {
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderRadius: 5,
+        color: C.text,
+        fontFamily: "monospace",
+        fontSize: 12,
+        padding: "4px 10px",
+        width: 240,
+        outline: "none"
+      }
+    }
+  ), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "K=", K, ", r=", r, ", N=", N, ", S=", S)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!mdSimData, onClick: runMdSim }, mdSimRunning ? "Running\u2026" : mdSimData ? "Re-run Simulation" : "\u25B6 Run Simulation"), mdSimData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setMdSimData(null) }, "\u2715 Clear"), mdSimData && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.green, fontFamily: "monospace" } }, "\u2713 Squares = empirical \u03B1/\u03B2 (", simTrials, " draws/\u03C4)")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap", fontSize: 11, fontFamily: "monospace", color: C.muted } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: C.blue, strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", null, "\u03B1(\u03C4) \u2014 independent of \u0394")), deltaArr.map((d, i) => /* @__PURE__ */ React.createElement("div", { key: d, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: MULTI_DELTA_COLORS[i % 5], strokeWidth: 1.8, strokeDasharray: "5 2" })), /* @__PURE__ */ React.createElement("span", null, "\u03B2(\u03C4, \u0394=", d, ")")))), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 400 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: multiDeltaMerged, margin: { left: 20, right: 20, top: 10, bottom: 22 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "tau",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "\u03C4", position: "insideBottom", offset: -10, fill: C.muted, fontSize: 13 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(prob)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `\u03C4=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(2)})` }) }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      x: tau,
+      stroke: C.green,
+      strokeDasharray: "5 3",
+      label: { value: `\u03C4=${tau}`, fill: C.green, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Line, { type: "monotone", dataKey: "alpha", name: "\u03B1 theory", stroke: C.blue, dot: false, strokeWidth: 2.2, connectNulls: false }), deltaArr.map((d, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `tl_${d}`,
+      type: "monotone",
+      dataKey: `beta_${d}`,
+      name: `\u03B2 theory \u0394=${d}`,
+      stroke: MULTI_DELTA_COLORS[i % 5],
+      dot: false,
+      strokeWidth: 1.8,
+      strokeDasharray: "5 2",
+      connectNulls: false
+    }
+  )), mdSimData && /* @__PURE__ */ React.createElement(Scatter, { dataKey: "alpha_sim", name: "\u03B1 sim", fill: C.blue, shape: (p) => {
+    const { cx, cy } = p;
+    if (!cx || !cy) return null;
+    return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.blue, opacity: 0.85 });
+  } }), mdSimData && deltaArr.map((d, i) => /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      key: `ms_${d}`,
+      dataKey: `beta_sim_${d}`,
+      name: `\u03B2 sim \u0394=${d}`,
+      fill: MULTI_DELTA_COLORS[i % 5],
+      shape: (pp) => {
+        const { cx, cy } = pp;
+        if (!cx || !cy) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: MULTI_DELTA_COLORS[i % 5], opacity: 0.85 });
+      }
+    }
+  ))))), tab === "sweep" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Optimal \u03C4*, \u0394* and N_A(1/2)/N vs error bound \u03B5 \u2014 multiple S values"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("label", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "S values (comma-separated):"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      value: sweepSList,
+      onChange: (e) => setSweepSList(e.target.value),
+      style: {
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderRadius: 5,
+        color: C.text,
+        fontFamily: "monospace",
+        fontSize: 12,
+        padding: "4px 10px",
+        width: 200,
+        outline: "none"
+      }
+    }
+  ), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "K=", K, ", r=", r, ", N=", N)), (() => {
+    const epsMax = 1 - Math.pow(3 / 4, 1 / NB);
+    return /* @__PURE__ */ React.createElement("div", { style: {
+      marginBottom: 14,
+      padding: "7px 12px",
+      borderRadius: 6,
+      background: "rgba(210,153,34,0.08)",
+      border: `1px solid ${C.yellow}`,
+      fontSize: 11,
+      fontFamily: "monospace",
+      color: C.yellow
+    } }, "\u26A0 For N_B=", NB, " blobs, \u03B5 must satisfy \u03B5 < 1\u2212(3/4)^(1/N_B) \u2248 ", epsMax.toExponential(3), " to keep network bounds decreasing with n. \xA0Current \u03B5=", epsilon, " is ", epsilon < epsMax ? /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, "\u2713 valid") : /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "\u2717 too large \u2014 reduce \u03B5 or decrease N_B"), ".");
+  })(), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, marginBottom: 14, flexWrap: "wrap", fontSize: 11, fontFamily: "monospace", color: C.muted } }, sweepSArr.map((sv, i) => /* @__PURE__ */ React.createElement("div", { key: sv, style: { display: "flex", alignItems: "center", gap: 10 } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: MULTI_S_COLORS[i % 4], strokeWidth: 2, strokeDasharray: "5 2" })), /* @__PURE__ */ React.createElement("span", { style: { color: MULTI_S_COLORS[i % 4] } }, "N_A(1/2)/N, S=", sv)), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: MULTI_S_COLORS[i % 4], strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", { style: { color: MULTI_S_COLORS[i % 4] } }, "(K+\u0394*)/N, S=", sv))))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "Optimal \u03C4* vs \u03B5"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 280 }, /* @__PURE__ */ React.createElement(LineChart, { data: sweepData, margin: { left: 20, right: 10, top: 8, bottom: 30 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "log10eps",
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "\u03B5", position: "insideBottom", offset: -18, fill: C.muted, fontSize: 12 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "\u03C4*", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 12 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `\u03B5=10^(${v})`, valFmt: (v) => v == null ? void 0 : v.toFixed(0) }) }), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 10, fontFamily: "monospace" } }), sweepSArr.map((sv, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: sv,
+      type: "monotone",
+      dataKey: `tau_S${sv}`,
+      name: `S=${sv}`,
+      stroke: MULTI_S_COLORS[i % 4],
+      dot: { r: 3 },
+      strokeWidth: 1.8,
+      connectNulls: false
+    }
+  ))))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "Minimal \u0394* vs \u03B5"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 280 }, /* @__PURE__ */ React.createElement(LineChart, { data: sweepData, margin: { left: 30, right: 10, top: 8, bottom: 30 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "log10eps",
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "\u03B5", position: "insideBottom", offset: -18, fill: C.muted, fontSize: 12 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "\u0394*", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 12 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `\u03B5=10^(${v})`, valFmt: (v) => v == null ? void 0 : v.toFixed(0) }) }), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 10, fontFamily: "monospace" } }), sweepSArr.map((sv, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: sv,
+      type: "monotone",
+      dataKey: `delta_S${sv}`,
+      name: `S=${sv}`,
+      stroke: MULTI_S_COLORS[i % 4],
+      dot: { r: 3 },
+      strokeWidth: 1.8,
+      connectNulls: false
+    }
+  )))))), /* @__PURE__ */ React.createElement("div", { style: { borderTop: `1px solid ${C.border}`, paddingTop: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "Combined: N_A(1/2)/N ", /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.6 } }, "(dashed)"), " and (K+\u0394*)/N ", /* @__PURE__ */ React.createElement("span", { style: { opacity: 0.6 } }, "(solid)"), " vs \u03B5 \xA0\xB7\xA0 red line = K/N = 1/r = ", (K / N).toFixed(3)), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 10, opacity: 0.7 } }, "N_A(1/2)/N: min fraction where a single node detects recoverability with prob \u2265 1/2 \xA0\xB7\xA0 (K+\u0394*)/N: fraction above which recoverability is certified with prob \u2265 1\u2212\u03B5 \xA0\xB7\xA0 Grey zone = region between the two curves"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(LineChart, { data: sweepData, margin: { left: 30, right: 20, top: 8, bottom: 30 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "log10eps",
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "\u03B5", position: "insideBottom", offset: -18, fill: C.muted, fontSize: 12 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      domain: [K / N - 0.01, 1],
+      tickFormatter: (v) => v.toFixed(2),
+      label: { value: "N_A / N", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `\u03B5=10^(${v})`, valFmt: (v) => v == null ? void 0 : v.toFixed(4) }) }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      y: K / N,
+      stroke: C.red,
+      strokeWidth: 1.5,
+      label: { value: `K/N = ${(K / N).toFixed(3)}`, position: "insideRight", fill: C.red, fontSize: 9 }
+    }
+  ), sweepSArr.map((sv, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `uh_${sv}`,
+      type: "monotone",
+      dataKey: `uhalf_S${sv}`,
+      name: `N_A(1/2)/N, S=${sv}`,
+      stroke: MULTI_S_COLORS[i % 4],
+      dot: { r: 3 },
+      strokeWidth: 1.8,
+      strokeDasharray: "6 3",
+      connectNulls: false
+    }
+  )), sweepSArr.map((sv, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `kdn_${sv}`,
+      type: "monotone",
+      dataKey: `kdnS${sv}`,
+      name: `(K+\u0394*)/N, S=${sv}`,
+      stroke: MULTI_S_COLORS[i % 4],
+      dot: { r: 3 },
+      strokeWidth: 1.8,
+      connectNulls: false
+    }
+  )))))), tab === "network" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Network-level error bounds vs validator count n \u2014 multi-N_B"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 10 } }, "\u03B5=", epsilon, " \xA0\xB7\xA0 Two panels matching Python output. \xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "Left"), ": P(maj. accepts valid block | data unrecover.) = 2\u207F\xB7\u03B5^(N_B\xB7\u2308n/2\u2309) \xA0\xB7\xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "Right"), ": P(maj. rejects invalid block | data recover.) = 2\u207F\xB7[1\u2212(1\u2212\u03B5)^N_B]^\u2308n/2\u2309"), (() => {
+    const epsMax = 1 - Math.pow(3 / 4, 1 / NB);
+    return epsilon >= epsMax ? /* @__PURE__ */ React.createElement("div", { style: {
+      marginBottom: 10,
+      padding: "6px 12px",
+      borderRadius: 6,
+      background: "rgba(248,81,73,0.08)",
+      border: `1px solid ${C.red}`,
+      fontSize: 11,
+      fontFamily: "monospace",
+      color: C.red
+    } }, "\u26A0 \u03B5=", epsilon, " \u2265 1\u2212(3/4)^(1/N_B) \u2248 ", epsMax.toExponential(3), " for N_B=", NB, ". Network bounds will NOT decrease with n \u2014 reduce \u03B5 or N_B.") : null;
+  })(), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!netSimData, onClick: runNetSim }, netSimRunning ? "Running\u2026" : netSimData ? "Re-run Simulation" : "\u25B6 Run Simulation"), netSimData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setNetSimData(null) }, "\u2715 Clear"), netSimData && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.green, fontFamily: "monospace" } }, "\u2713 Squares = simulated P(majority wrong) \u2014 should sit at or below theory bound")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 18, marginBottom: 14, flexWrap: "wrap", fontSize: 11, fontFamily: "monospace", color: C.muted } }, NB_VALS.map((nb, i) => /* @__PURE__ */ React.createElement("div", { key: nb, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: NB_COLORS[i], strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", { style: { color: NB_COLORS[i] } }, "N_B = ", nb)))), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "P(block valid for maj. | data ", /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "unrecover."), ") = 2\u207F\xB7\u03B5^(N_B\xB7\u2308n/2\u2309)"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 360 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: networkMerged, margin: { left: 22, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(bound)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(1)})` }) }), NB_VALS.map((nb, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: nb,
+      type: "monotone",
+      dataKey: `unrec_${nb}`,
+      name: `N_B=${nb}`,
+      stroke: NB_COLORS[i],
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  )), netSimData && NB_VALS.map((nb, i) => /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      key: `us_${nb}`,
+      dataKey: `unrec_sim_${nb}`,
+      name: `sim N_B=${nb}`,
+      fill: NB_COLORS[i],
+      shape: (p) => {
+        const { cx, cy } = p;
+        if (!cx || !cy) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: NB_COLORS[i], opacity: 0.85 });
+      }
+    }
+  )), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 11, fontFamily: "monospace" } })))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "P(block invalid for maj. | data ", /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, "recover."), ") = 2\u207F\xB7[1\u2212(1\u2212\u03B5)^N_B]^\u2308n/2\u2309"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 360 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: networkMerged, margin: { left: 22, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(bound)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(1)})` }) }), NB_VALS.map((nb, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: nb,
+      type: "monotone",
+      dataKey: `rec_${nb}`,
+      name: `N_B=${nb}`,
+      stroke: NB_COLORS[i],
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  )), netSimData && NB_VALS.map((nb, i) => /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      key: `rs_${nb}`,
+      dataKey: `rec_sim_${nb}`,
+      name: `sim N_B=${nb}`,
+      fill: NB_COLORS[i],
+      shape: (p) => {
+        const { cx, cy } = p;
+        if (!cx || !cy) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: NB_COLORS[i], opacity: 0.85 });
+      }
+    }
+  )), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 11, fontFamily: "monospace" } }))))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 16,
+    padding: "10px 14px",
+    background: C.bg,
+    borderRadius: 7,
+    border: `1px solid ${C.border}`,
+    fontFamily: "monospace",
+    fontSize: 11,
+    color: C.muted
+  } }, /* @__PURE__ */ React.createElement("div", { style: { color: C.text, marginBottom: 6, fontWeight: 700 } }, "Model B: p = \u03B5^N_B with \u03B5=", epsilon), NB_VALS.map((nb) => {
+    const log10p = nb * Math.log10(epsilon);
+    return /* @__PURE__ */ React.createElement("div", { key: nb, style: { marginBottom: 2 } }, "N_B=", String(nb).padStart(4, " "), ":\xA0 log\u2081\u2080(p) = ", /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, log10p.toFixed(0)), "\xA0 (p = 10^", log10p.toFixed(0), ")");
+  }), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 6, color: C.yellow, fontSize: 10 } }, "\u2713 Note: \u03B5=", epsilon, ' used throughout (Python script had a typo printing "1e-5" while computing with 1e-4).'))), tab === "wasted" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Average wasted slots per epoch vs n \u2014 three regimes"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 10 } }, "\u03B5=", epsilon, ", N_B=", NB, ", T=", T_epoch.toLocaleString(), ", f\u2248", f.toFixed(4), "\xA0\xB7\xA0 Tf = ", Math.round(T_epoch * f).toLocaleString(), " avg non-empty slots/epoch"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 18, marginBottom: 10, flexWrap: "wrap", fontSize: 11, fontFamily: "monospace", color: C.muted } }, /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: C.red, strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", null, "Code 2 \u2014 Basic: T\xB7f\xB72\u207F\xB7(1\u2212(1\u2212\u03B5)^N_B)^\u2308n/2\u2309")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: C.blue, strokeWidth: 2, strokeDasharray: "5 2" })), /* @__PURE__ */ React.createElement("span", null, "Code 3 \u2014 Tight upper: T\xB7f\xB7(4p(1\u2212p))^(n/2), p_tight=", p_tight, " < 0.5")), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: C.green, strokeWidth: 2, strokeDasharray: "3 2" })), /* @__PURE__ */ React.createElement("span", null, "Code 4 \u2014 Lower bound: T\xB7f\xB7(1\u2212exp(\u2212n\xB7D(q\u2016p))), p_inv=", p_inv, " > 0.5"))), p_tight >= 0.5 && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 8, padding: "5px 10px", borderRadius: 5, background: "rgba(248,81,73,0.08)", border: `1px solid ${C.red}`, fontSize: 11, fontFamily: "monospace", color: C.red } }, "\u26A0 p_tight=", p_tight, " \u2265 0.5 \u2014 Code 3 tight bound requires p < 0.5. Use Auto p_tight button."), p_inv <= 0.5 && /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 8, padding: "5px 10px", borderRadius: 5, background: "rgba(248,81,73,0.08)", border: `1px solid ${C.red}`, fontSize: 11, fontFamily: "monospace", color: C.red } }, "\u26A0 p_inv=", p_inv, " \u2264 0.5 \u2014 Code 4 lower bound requires p > 0.5."), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!wastedSimData, onClick: runWastedSim }, wastedSimRunning ? "Running\u2026" : wastedSimData ? "Re-run Simulation" : "\u25B6 Run Simulation"), wastedSimData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setWastedSimData(null) }, "\u2715 Clear"), wastedSimData && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.green, fontFamily: "monospace" } }, "\u2713 Squares = simulated wasted slots \u2014 should sit at or below Code2/3 bounds, at or above Code4")), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 6, opacity: 0.8 } }, "Log\u2081\u2080 scale. Simulation uses Bernoulli(p) majority vote \xD7 T\xB7f for each code."), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 420 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: wastedMerged, margin: { left: 34, right: 20, top: 10, bottom: 22 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -10, fill: C.muted, fontSize: 12 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(wasted slots/epoch)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 9 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(2)})` }) }), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 11, fontFamily: "monospace" } }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      y: Math.log10(T_epoch * f),
+      stroke: C.yellow,
+      strokeDasharray: "5 3",
+      label: { value: `Tf=${Math.round(T_epoch * f).toLocaleString()}`, position: "insideRight", fill: C.yellow, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "log10_wasted",
+      name: "Code 2 \u2014 Basic upper",
+      stroke: C.red,
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  ), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "log10_tight",
+      name: `Code 3 \u2014 Tight upper (p=${p_tight})`,
+      stroke: C.blue,
+      dot: false,
+      strokeWidth: 2,
+      strokeDasharray: "5 2",
+      connectNulls: false
+    }
+  ), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "log10_lower",
+      name: `Code 4 \u2014 Lower bound (p=${p_inv})`,
+      stroke: C.green,
+      dot: false,
+      strokeWidth: 2,
+      strokeDasharray: "3 2",
+      connectNulls: false
+    }
+  ), wastedSimData && /* @__PURE__ */ React.createElement(Scatter, { dataKey: "log10_wasted_sim", name: "Code 2 sim", fill: C.red, shape: (p) => {
+    const { cx, cy } = p;
+    if (!cx || !cy) return null;
+    return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.red, opacity: 0.85 });
+  } }), wastedSimData && /* @__PURE__ */ React.createElement(Scatter, { dataKey: "log10_tight_sim", name: "Code 3 sim", fill: C.blue, shape: (p) => {
+    const { cx, cy } = p;
+    if (!cx || !cy) return null;
+    return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.blue, opacity: 0.85 });
+  } }), wastedSimData && /* @__PURE__ */ React.createElement(Scatter, { dataKey: "log10_lower_sim", name: "Code 4 sim", fill: C.green, shape: (p) => {
+    const { cx, cy } = p;
+    if (!cx || !cy) return null;
+    return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.green, opacity: 0.85 });
+  } }))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 10,
+    padding: "8px 12px",
+    background: C.bg,
+    borderRadius: 7,
+    border: `1px solid ${C.border}`,
+    fontFamily: "monospace",
+    fontSize: 10,
+    color: C.muted
+  } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.yellow } }, "Code 3 p_tight"), ': Python hardcodes p = (1\u2212(1\u2212\u03B5)^N) + 0.1. Use "Auto p_tight" button to match this exactly (p = ', parseFloat(Math.min(0.499, 1 - Math.pow(1 - epsilon, NB) + 0.1).toFixed(4)), "). \xA0The +0.1 offset moves p away from the (1\u2212(1\u2212\u03B5)^N_B) boundary. \xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.yellow } }, "Code 4 p_inv"), ": Python hardcodes p = 0.7. Adjust p_inv parameter to match your scenario.")), tab === "chernoff" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Chernoff bounds \u2014 P(majority accepts bad block), both regimes"), (p_tight >= 0.5 || p_inv <= 0.5) && /* @__PURE__ */ React.createElement("div", { style: {
+    marginBottom: 10,
+    padding: "5px 10px",
+    borderRadius: 5,
+    background: "rgba(210,153,34,0.08)",
+    border: `1px solid ${C.yellow}`,
+    fontSize: 11,
+    fontFamily: "monospace",
+    color: C.yellow
+  } }, "\u26A0 ", p_tight >= 0.5 ? `p_tight=${p_tight} must be < 0.5 for Code 3. ` : "", p_inv <= 0.5 ? `p_inv=${p_inv} must be > 0.5 for Code 4.` : ""), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!chernSimData, onClick: runChernSim }, chernSimRunning ? "Running\u2026" : chernSimData ? "Re-run Simulation" : "\u25B6 Run Simulation"), chernSimData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setChernSimData(null) }, "\u2715 Clear"), chernSimData && /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.green, fontFamily: "monospace" } }, "\u2713 Teal/orange squares = exact simulated P(maj. wrong) \u2014 below Code3 bound (left), above Code4 bound (right)")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 4, textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "Code 3"), " \u2014 Tight ", /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "upper"), " bound (p_tight=", p_tight, " < 0.5)"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 8, textAlign: "center", opacity: 0.7 } }, "P(maj. accepts) \u2264 (4p(1\u2212p))^(n/2) \xA0\xB7\xA0 log\u2081\u2080 scale \xA0\xB7\xA0 grey zone"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: chernMerged, margin: { left: 22, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(upper bound)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(2)})` }) }), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "log10_tight",
+      name: `Code 3 bound (p=${p_tight})`,
+      stroke: C.blue,
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  ), chernSimData && /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      dataKey: "sim_tight",
+      name: "Exact sim",
+      fill: C.teal,
+      shape: (p) => {
+        const { cx, cy } = p;
+        if (!cx || !cy) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.teal, opacity: 0.9 });
+      }
+    }
+  )))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 4, textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "Code 4"), " \u2014 Chernoff ", /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "lower"), " bound (p_inv=", p_inv, " > 0.5)"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 8, textAlign: "center", opacity: 0.7 } }, "P(maj. accepts) \u2265 1\u2212exp(\u2212n\xB7KL(q\u2016p)) \xA0\xB7\xA0 linear scale \xA0\xB7\xA0 below red line"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: chernMerged, margin: { left: 20, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      domain: [0, 1],
+      tickFormatter: (v) => v.toFixed(2),
+      label: { value: "P(majority accepts bad block)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 9 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => v == null ? void 0 : v.toFixed(5) }) }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      y: 0.5,
+      stroke: C.yellow,
+      strokeDasharray: "5 3",
+      label: { value: "0.5", position: "insideRight", fill: C.yellow, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "lower_bound",
+      name: `Code 4 bound (p=${p_inv})`,
+      stroke: C.red,
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  ), chernSimData && /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      dataKey: "sim_lower",
+      name: "Exact sim",
+      fill: C.orange,
+      shape: (p) => {
+        const { cx, cy } = p;
+        if (!cx || !cy) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: C.orange, opacity: 0.9 });
+      }
+    }
+  ))))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 12,
+    padding: "8px 12px",
+    background: C.bg,
+    borderRadius: 7,
+    border: `1px solid ${C.border}`,
+    fontFamily: "monospace",
+    fontSize: 10,
+    color: C.muted
+  } }, /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "Code 3"), ": (4p(1\u2212p))^(n/2) = exp(\u2212n\xB7KL(1/2\u2016p)) \u2014 tight Chernoff upper bound for grey zone (p < 0.5). Python: p = (1\u2212(1\u2212\u03B5)^N)+0.1 \u2248 ", parseFloat(Math.min(0.499, 1 - Math.pow(1 - epsilon, NB) + 0.1).toFixed(4)), ' for current \u03B5,NB. Use "Auto p_tight" to match.'), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "Code 4"), ": 1\u2212exp(\u2212n\xB7KL(q\u2016p)), q=(\u2308n/2\u2309\u22121)/n \u2014 Chernoff lower bound below red line (p > 0.5). Python: p=0.7. Set p_inv accordingly."), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 4, color: C.yellow } }, "\u2713 Split into two panels to match Python's two separate plt.scatter() calls. Code 3 on log scale (values decay to ~10\u207B\u2078 at n=100). Code 4 on linear scale (grows toward 1)."))), tab === "median" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Blockchain analysis \u2014 probability of invalid block adoption & median time"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 14 } }, "\u03B5=", epsilon, ", f\u2248", f.toFixed(4), " \xA0\xB7\xA0 SPY=31,536,000 (365 days, matching Python) \xA0\xB7\xA0 NB=1 (single-blob blockchain view)"), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "P(invalid block accepted by maj.) = f\xB72\u207F\xB7\u03B5^\u2308n/2\u2309 \xA0\xB7\xA0 log\u2081\u2080 scale"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 8, opacity: 0.7, textAlign: "center" } }, "y1 = f\xB72\u207F\xB7\u03B5^\u2308n/2\u2309 \u2014 slot probability \xD7 network acceptance bound"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(LineChart, { data: blockchainData, margin: { left: 22, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(prob.)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(1)})` }) }), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "log10_y1",
+      name: "P(invalid accepted)",
+      stroke: C.red,
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  )))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 6, textAlign: "center" } }, "Median time T\u2081/\u2082 to first invalid block (years) \xA0\xB7\xA0 log\u2081\u2080 scale"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 8, opacity: 0.7, textAlign: "center" } }, "y2 = \u2308ln(2)\xB7(2^(\u2212n)\xB7\u03B5^(\u2212\u2308n/2\u2309) \u2212 f)/f\u2309 / SPY \xA0\xB7\xA0 corrected from previous (\u2212f term added)"), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(LineChart, { data: blockchainData, margin: { left: 22, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "n",
+      stroke: C.muted,
+      tick: { fontSize: 11, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "n (validators)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 11 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(years)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `n=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(1)}) yrs` }) }), /* @__PURE__ */ React.createElement(
+    ReferenceLine,
+    {
+      y: Math.log10(267e8),
+      stroke: C.yellow,
+      strokeDasharray: "5 3",
+      label: { value: "Age of Universe", position: "insideRight", fill: C.yellow, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "log10_y2",
+      name: "Median time T\u2081/\u2082",
+      stroke: C.blue,
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  ))))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 14,
+    padding: "10px 14px",
+    background: C.bg,
+    borderRadius: 7,
+    border: `1px solid ${C.border}`,
+    fontFamily: "monospace",
+    fontSize: 11,
+    color: C.muted
+  } }, /* @__PURE__ */ React.createElement("div", { style: { color: C.text, marginBottom: 5, fontWeight: 700 } }, "Formula notes (matching Python Code 1)"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "y1 = f \xB7 2\u207F \xB7 \u03B5^\u2308n/2\u2309 \xA0\xB7\xA0 upper bound on prob. invalid block adopted per slot"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 3 } }, "y2 = \u2308 ln(2) \xB7 (2^(\u2212n) \xB7 \u03B5^(\u2212\u2308n/2\u2309) \u2212 f) / f \u2309 / SPY \xA0\xB7\xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, "corrected"), " vs. previous version which used ln(2)\xB72^(\u2212n)\xB7\u03B5^(\u2212\u2308n/2\u2309)/f/SPY (missing \u2212f)"), /* @__PURE__ */ React.createElement("div", { style: { color: C.yellow, marginTop: 4, fontSize: 10 } }, "SPY = 31,536,000 s (365 days exactly, matching Python). Previous version used 365.25 days \u2014 negligible but now consistent."))), tab === "builder" && /* @__PURE__ */ React.createElement(React.Fragment, null, /* @__PURE__ */ React.createElement(SecHead, null, "Block builder \u2014 hitting time \u03C4\u2090\u2080\u209A\u2089\u2096\u2089: blobs to inspect before N_B are accepted"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 12 } }, "\u03C4\u2090\u2080\u209A\u2089\u2096\u2089 = min{T : P(\u03C4\u2090\u2080\u209A \u2264 T) \u2265 q} \xA0\xB7\xA0 Approx: \u03C4 \u2248 (N_B + z_q\xB7\u221AN_B) / p \xA0\xB7\xA0 z\u2080\u2089\u2089=2.3263, z\u2080\u2089\u2089\u2089=3.0902"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, marginBottom: 14, flexWrap: "wrap" } }, /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "Confidence q:"), [0.9, 0.95, 0.99, 0.999].map((q) => /* @__PURE__ */ React.createElement("button", { key: q, onClick: () => setQ_conf(q), style: {
+    background: q_conf === q ? C.blue : "transparent",
+    color: q_conf === q ? "#000" : C.blue,
+    border: `1px solid ${C.blue}`,
+    borderRadius: 5,
+    padding: "4px 12px",
+    cursor: "pointer",
+    fontSize: 11,
+    fontFamily: "monospace",
+    fontWeight: q_conf === q ? 700 : 400
+  } }, q)), /* @__PURE__ */ React.createElement("span", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "z_q = ", zQuantile(q_conf).toFixed(4)), /* @__PURE__ */ React.createElement("div", { style: { height: 18, width: 1, background: C.border } }), /* @__PURE__ */ React.createElement("label", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace" } }, "Trials:"), /* @__PURE__ */ React.createElement(
+    "input",
+    {
+      type: "number",
+      value: bSimTrials,
+      min: 20,
+      max: 2e3,
+      step: 20,
+      onChange: (e) => setBSimTrials(Math.max(20, parseInt(e.target.value) || 100)),
+      style: {
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderRadius: 5,
+        color: C.text,
+        fontFamily: "monospace",
+        fontSize: 12,
+        padding: "3px 7px",
+        width: 72,
+        outline: "none"
+      }
+    }
+  ), /* @__PURE__ */ React.createElement(Btn, { color: C.green, active: !!builderSimData, onClick: runBuilderSim }, bSimRunning ? "Running\u2026" : builderSimData ? "Re-run Simulation" : "\u25B6 Run Simulation"), builderSimData && /* @__PURE__ */ React.createElement(Btn, { color: C.red, active: false, onClick: () => setBuilderSimData(null) }, "\u2715 Clear")), builderSimData && /* @__PURE__ */ React.createElement("div", { style: {
+    marginBottom: 10,
+    padding: "5px 12px",
+    borderRadius: 5,
+    background: "rgba(63,185,80,0.08)",
+    border: `1px solid ${C.green}`,
+    fontSize: 11,
+    fontFamily: "monospace",
+    color: C.green
+  } }, "\u2713 Simulation complete (", bSimTrials, " trials/point) \u2014 scatter points overlay theory lines. \xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.yellow } }, "Unrecoverable panel: simulation shown only for \u03B5=10\u207B\xB9 (larger \u03B5 too slow in browser).")), /* @__PURE__ */ React.createElement("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 } }, /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 5, textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.red } }, "Unrecoverable"), " (p = \u03B5) \u2014 \u03C4\u2090\u2080\u209A\u2089 vs N_B \xA0\xB7\xA0 log\u2081\u2080 scale"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 8, opacity: 0.7, textAlign: "center" } }, "data is unrecoverable \u2192 P(n_A\u2265\u03C4|N_A) \u2264 \u03B5 \u2192 each blob accepted w/ prob p=\u03B5"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap", justifyContent: "center", fontSize: 10, fontFamily: "monospace", color: C.muted } }, EPS_VALS.map((eps, ki) => /* @__PURE__ */ React.createElement("div", { key: ki, style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement("svg", { width: 22, height: 8 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 4, x2: 22, y2: 4, stroke: EPS_COLS[ki], strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", { style: { color: EPS_COLS[ki] } }, "\u03B5=", EPS_LBLS[ki])))), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: builderMerged, margin: { left: 22, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "NB",
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "N_B (blobs per block)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(\u03C4_NB,q)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `N_B=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(2)})` }) }), EPS_VALS.map((_, ki) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `ul_${ki}`,
+      type: "monotone",
+      dataKey: `u_log10_${ki}`,
+      name: `\u03B5=${EPS_LBLS[ki]}`,
+      stroke: EPS_COLS[ki],
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  )), builderSimData && /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      dataKey: "u_sim_log10_0",
+      name: `sim \u03B5=${EPS_LBLS[0]}`,
+      fill: EPS_COLS[0],
+      shape: (props) => {
+        const { cx, cy } = props;
+        if (cx == null || cy == null) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: EPS_COLS[0], opacity: 0.9 });
+      }
+    }
+  ), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 10, fontFamily: "monospace" } }))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 6,
+    padding: "5px 10px",
+    background: C.bg,
+    borderRadius: 5,
+    border: `1px solid ${C.border}`,
+    fontSize: 10,
+    fontFamily: "monospace",
+    color: C.muted
+  } }, "\u03C4 \u2248 N_B/\u03B5 + z_q\xB7\u221AN_B/\u03B5 \xA0\xB7\xA0 dominant term N_B/\u03B5 grows linearly in N_B \xA0\xB7\xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.yellow } }, "top curve = \u03B5=10\u207B\u2074"))), /* @__PURE__ */ React.createElement("div", null, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 5, textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, "Recoverable"), " (p = 1\u2212\u03B5) \u2014 \u03C4\u2090\u2080\u209A\u2089 vs N_B \xA0\xB7\xA0 linear scale"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 8, opacity: 0.7, textAlign: "center" } }, "data is recoverable \u2192 P(n_A\u2265\u03C4|N_A) \u2265 1\u2212\u03B5 \u2192 each blob accepted w/ prob p=1\u2212\u03B5"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap", justifyContent: "center", fontSize: 10, fontFamily: "monospace", color: C.muted } }, EPS_VALS.map((eps, ki) => /* @__PURE__ */ React.createElement("div", { key: ki, style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement("svg", { width: 22, height: 8 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 4, x2: 22, y2: 4, stroke: EPS_COLS[ki], strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", { style: { color: EPS_COLS[ki] } }, "p=1\u2212", EPS_LBLS[ki]))), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 4 } }, /* @__PURE__ */ React.createElement("svg", { width: 22, height: 8 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 4, x2: 22, y2: 4, stroke: C.muted, strokeWidth: 1.5, strokeDasharray: "4 2" })), /* @__PURE__ */ React.createElement("span", null, "\u03C4=N_B (lower bound)"))), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 340 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: builderMerged, margin: { left: 30, right: 10, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "NB",
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "N_B (blobs per block)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => v >= 1e3 ? `${(v / 1e3).toFixed(1)}k` : v.toFixed(0),
+      label: { value: "\u03C4_{N_B,q} (blobs to inspect)", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 9 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `N_B=${v}`, valFmt: (v) => v == null ? void 0 : v.toFixed(0) }) }), /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      type: "monotone",
+      dataKey: "NB",
+      name: "\u03C4 = N_B (ideal)",
+      stroke: C.muted,
+      dot: false,
+      strokeWidth: 1.5,
+      strokeDasharray: "4 2",
+      connectNulls: false
+    }
+  ), EPS_VALS.map((_, ki) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `rl_${ki}`,
+      type: "monotone",
+      dataKey: `r_approx_${ki}`,
+      name: `p=1-${EPS_LBLS[ki]}`,
+      stroke: EPS_COLS[ki],
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  )), builderSimData && EPS_VALS.map((_, ki) => /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      key: `rs_${ki}`,
+      dataKey: `r_sim_${ki}`,
+      name: `sim p=1-${EPS_LBLS[ki]}`,
+      fill: EPS_COLS[ki],
+      shape: (props) => {
+        const { cx, cy } = props;
+        if (cx == null || cy == null) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: EPS_COLS[ki], opacity: 0.85 });
+      }
+    }
+  )), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 10, fontFamily: "monospace" } }))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 6,
+    padding: "5px 10px",
+    background: C.bg,
+    borderRadius: 5,
+    border: `1px solid ${C.border}`,
+    fontSize: 10,
+    fontFamily: "monospace",
+    color: C.muted
+  } }, "\u03C4 \u2248 N_B/(1\u2212\u03B5) + z_q\xB7\u221AN_B/(1\u2212\u03B5) \u2248 N_B + z_q\xB7\u221AN_B for small \u03B5 \xA0\xB7\xA0", /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, "all curves converge near \u03C4 = N_B")))), /* @__PURE__ */ React.createElement("div", { style: { borderTop: `1px solid ${C.border}`, paddingTop: 16 } }, /* @__PURE__ */ React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 5, textAlign: "center" } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.purple } }, "Grey zone"), " (K+1 \u2264 N_A < K+\u0394) \u2014 fixed p \u2208 {0.2, 0.3, 0.5, 0.7} \xA0\xB7\xA0 log\u2081\u2080 scale"), /* @__PURE__ */ React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 10, opacity: 0.7, textAlign: "center" } }, "P(n_A \u2265 \u03C4 | N_A) \u2208 (\u03B5, 1\u2212\u03B5) \xA0\xB7\xA0 \u03C4\u2090\u2080\u209A\u2089(1\u2212\u03B5) < \u03C4\u2090\u2080\u209A\u2089(p) < \u03C4\u2090\u2080\u209A\u2089(\u03B5)"), /* @__PURE__ */ React.createElement("div", { style: { display: "flex", gap: 16, marginBottom: 10, flexWrap: "wrap", justifyContent: "center", fontSize: 11, fontFamily: "monospace", color: C.muted } }, PGREY_VALS.map((p, pi) => /* @__PURE__ */ React.createElement("div", { key: pi, style: { display: "flex", alignItems: "center", gap: 5 } }, /* @__PURE__ */ React.createElement("svg", { width: 26, height: 10 }, /* @__PURE__ */ React.createElement("line", { x1: 0, y1: 5, x2: 26, y2: 5, stroke: PGREY_COLS[pi], strokeWidth: 2 })), /* @__PURE__ */ React.createElement("span", { style: { color: PGREY_COLS[pi] } }, "p = ", p)))), /* @__PURE__ */ React.createElement(ResponsiveContainer, { width: "100%", height: 320 }, /* @__PURE__ */ React.createElement(ComposedChart, { data: builderMerged, margin: { left: 22, right: 20, top: 8, bottom: 28 } }, /* @__PURE__ */ React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }), /* @__PURE__ */ React.createElement(
+    XAxis,
+    {
+      dataKey: "NB",
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      label: { value: "N_B (blobs per block)", position: "insideBottom", offset: -14, fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(
+    YAxis,
+    {
+      stroke: C.muted,
+      tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" },
+      tickFormatter: (v) => `10^${v.toFixed(0)}`,
+      label: { value: "log\u2081\u2080(\u03C4_{N_B,q})", angle: -90, position: "insideLeft", fill: C.muted, fontSize: 10 }
+    }
+  ), /* @__PURE__ */ React.createElement(Tooltip, { content: /* @__PURE__ */ React.createElement(CustomTT, { labelFmt: (v) => `N_B=${v}`, valFmt: (v) => `10^(${v == null ? void 0 : v.toFixed(2)})` }) }), /* @__PURE__ */ React.createElement(Legend, { wrapperStyle: { fontSize: 11, fontFamily: "monospace" } }), PGREY_VALS.map((_, pi) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `gl_${pi}`,
+      type: "monotone",
+      dataKey: `g_log10_${pi}`,
+      name: `p=${PGREY_VALS[pi]}`,
+      stroke: PGREY_COLS[pi],
+      dot: false,
+      strokeWidth: 2,
+      connectNulls: false
+    }
+  )), builderSimData && PGREY_VALS.map((_, pi) => /* @__PURE__ */ React.createElement(
+    Scatter,
+    {
+      key: `gs_${pi}`,
+      dataKey: `g_sim_log10_${pi}`,
+      name: `sim p=${PGREY_VALS[pi]}`,
+      fill: PGREY_COLS[pi],
+      shape: (props) => {
+        const { cx, cy } = props;
+        if (cx == null || cy == null) return null;
+        return /* @__PURE__ */ React.createElement("rect", { x: cx - 4, y: cy - 4, width: 8, height: 8, fill: PGREY_COLS[pi], opacity: 0.9 });
+      }
+    }
+  ))))), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 16,
+    padding: "12px 16px",
+    background: C.bg,
+    borderRadius: 8,
+    border: `1px solid ${C.border}`,
+    fontFamily: "monospace",
+    fontSize: 11,
+    color: C.muted
+  } }, /* @__PURE__ */ React.createElement("div", { style: { color: C.text, marginBottom: 8, fontWeight: 700 } }, "Negative-binomial hitting time \u03C4_NB,q"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "PMF:"), "\xA0P(\u03C4\u2090\u2080\u209A=t) = C(t\u22121, N_B\u22121) \xB7 p^N_B \xB7 (1\u2212p)^(t\u2212N_B), t = N_B, N_B+1, \u2026"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.green } }, "q-quantile:"), "\xA0\u03C4\u2090\u2080\u209A\u2089 = min{T \u2265 N_B : \u03A3 P(\u03C4\u2090\u2080\u209A=t) \u2265 q}"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.yellow } }, "Approximation:"), "\xA0\u03C4\u2090\u2080\u209A\u2089 \u2248 (N_B + z_q\xB7\u221AN_B) / p \xA0(accurate for N_B \u2265 10)"), /* @__PURE__ */ React.createElement("div", { style: { marginBottom: 5 } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.purple } }, "z_q values:"), "\xA0z\u2080\u2089\u2080=1.2816, z\u2080\u2089\u2085=1.6449, z\u2080\u2089\u2089=2.3263, z\u2080\u2089\u2089\u2089=3.0902"), /* @__PURE__ */ React.createElement("div", { style: {
+    marginTop: 8,
+    padding: "6px 10px",
+    background: C.panel,
+    borderRadius: 5,
+    border: `1px solid ${C.border}`,
+    fontSize: 10,
+    color: C.muted
+  } }, /* @__PURE__ */ React.createElement("span", { style: { color: C.blue } }, "Interpretation:"), "\xA0\u03C4\u2090\u2080\u209A\u2089 is the number of blobs the builder must inspect to fill a block with N_B accepted blobs, with confidence q. For unrecoverable data (p=\u03B5), \u03C4 \u2248 N_B/\u03B5 \u2014 the builder wastes \u22481/\u03B5 attempts per accepted blob. For recoverable data (p\u22481), \u03C4 \u2248 N_B \u2014 almost no waste. Current \u03B5=", epsilon, ": \u03C4 \u2248 N_B/\u03B5 = ", (1 / epsilon).toFixed(0), "\xB7N_B (unrecoverable), \u03C4 \u2248 N_B (recoverable).")))), /* @__PURE__ */ React.createElement("div", { style: { marginTop: 14, fontSize: 10, color: C.muted, fontFamily: "monospace", textAlign: "center", opacity: 0.45 } }, "DA SAMPLING ANALYSIS \xB7 HYPERGEOMETRIC MODEL \xB7 N=", N, " COLUMNS \xB7 K+1 RECOVERY THRESHOLD"))));
+}
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(/* @__PURE__ */ React.createElement(DACalculator, null));
+
+  </script>
+</body>
+</html>

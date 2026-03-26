@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Adversary Attack Surface Calculator</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1117; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/recharts@2.1.9/umd/Recharts.js"></script>
+  <script>
+const React = window.React;
+const { useState, useMemo, useCallback } = React;
+const {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, ReferenceLine, ResponsiveContainer, ComposedChart
+} = window.Recharts;
+
+const C = {
+  bg: "#0d1117", panel: "#161b22", panel2: "#1c2128",
+  border: "#30363d", blue: "#58a6ff", red: "#f85149",
+  green: "#3fb950", yellow: "#d29922", purple: "#bc8cff",
+  orange: "#e07b39", teal: "#39d0c8", text: "#e6edf3", muted: "#8b949e"
+};
+
+// ─── Math helpers ──────────────────────────────────────────────
+function comb(n, k) {
+  if (k < 0 || k > n || n < 0) return 0;
+  if (k === 0 || k === n) return 1;
+  let r = 1;
+  const m = Math.min(k, n - k);
+  for (let i = 0; i < m; i++) r = r * (n - i) / (i + 1);
+  return r;
+}
+function binomPDF(R, a, pd) {
+  return comb(R, a) * Math.pow(Math.max(0, pd), a) * Math.pow(Math.max(0, 1 - pd), R - a);
+}
+// P(all t drawn nodes are adversarial | a adversarial out of R, draw t without replacement)
+function pfailSingle(a, R, t) {
+  if (a < t) return 0;
+  return comb(a, t) / comb(R, t);
+}
+// Effective subnetwork failure probability (averaged over adversarial occupancy)
+function pfailEff(pd, R, t) {
+  let s = 0;
+  for (let a = t; a <= R; a++) s += binomPDF(R, a, pd) * pfailSingle(a, R, t);
+  return Math.min(1, Math.max(0, s));
+}
+// Attack A: P(validator fails sampling) — needs S-tau+1 failures
+function PA(pd, R, t, S, tau) {
+  const pf = pfailEff(pd, R, t);
+  let s = 0;
+  const from = S - tau + 1;
+  for (let j = from; j <= S; j++) s += comb(S, j) * Math.pow(pf, j) * Math.pow(1 - pf, S - j);
+  return Math.min(1, Math.max(0, s));
+}
+// Attack B: P(validator accepts unavailable data) — needs tau hits from Y_full captured subnets
+function hyperPMF(N, K, n, k) {
+  if (k < 0 || k > n || k > K || n - k > N - K) return 0;
+  return comb(K, k) * comb(N - K, n - k) / comb(N, n);
+}
+function PB(pd, R, N, S, tau) {
+  const Yf = Math.round(N * Math.pow(pd, R));
+  let s = 0;
+  for (let g = tau; g <= Math.min(S, Yf); g++) s += hyperPMF(N, Yf, S, g);
+  return Math.min(1, Math.max(0, s));
+}
+// Regime thresholds
+function th_A(tau, S, R) { return Math.pow(tau / S, 1 / R); }
+function th_B(e, R) { return Math.pow(Math.max(0, 1 - 1 / e), 1 / R); }
+
+// ─── UI Components ─────────────────────────────────────────────
+function Tip({ text }) {
+  const [show, setShow] = useState(false);
+  return React.createElement("span", {
+    style: { position: "relative", display: "inline-block", marginLeft: 4 }
+  },
+    React.createElement("span", {
+      onMouseEnter: () => setShow(true), onMouseLeave: () => setShow(false),
+      style: { cursor: "help", color: C.muted, fontSize: 11, border: `1px solid ${C.muted}`, borderRadius: "50%", width: 14, height: 14, display: "inline-flex", alignItems: "center", justifyContent: "center", userSelect: "none" }
+    }, "?"),
+    show && React.createElement("div", {
+      style: { position: "absolute", left: 20, top: -4, zIndex: 99, background: C.panel2, border: `1px solid ${C.border}`, borderRadius: 6, padding: "8px 12px", width: 260, fontSize: 11, color: C.text, lineHeight: 1.6, whiteSpace: "pre-line" }
+    }, text)
+  );
+}
+
+function ParamInput({ label, tip, value, onChange, step, min, max, readOnly, color }) {
+  return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
+    React.createElement("label", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", display: "flex", alignItems: "center" } },
+      label, tip && React.createElement(Tip, { text: tip })
+    ),
+    React.createElement("input", {
+      type: "number", value, step: step || 1, min, max,
+      readOnly: !!readOnly,
+      onChange: e => onChange && onChange(Number(e.target.value)),
+      style: {
+        width: 90, padding: "5px 8px", borderRadius: 6, fontSize: 13,
+        fontFamily: "monospace", background: readOnly ? C.panel2 : C.bg,
+        border: `1px solid ${color || C.border}`, color: color || C.text,
+        outline: "none"
+      }
+    })
+  );
+}
+
+function StatCard({ label, tip, value, color }) {
+  return React.createElement("div", {
+    style: { background: C.bg, border: `1px solid ${color || C.border}`, borderRadius: 7, padding: "8px 13px", minWidth: 140 }
+  },
+    React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 3, display: "flex", alignItems: "center" } },
+      label, tip && React.createElement(Tip, { text: tip })
+    ),
+    React.createElement("div", { style: { fontSize: 13, color: color || C.text, fontFamily: "monospace", fontWeight: "bold" } }, value)
+  );
+}
+
+function SecHead({ children }) {
+  return React.createElement("div", {
+    style: { fontSize: 10, letterSpacing: "0.15em", color: C.muted, fontFamily: "monospace", marginBottom: 10, textTransform: "uppercase" }
+  }, children);
+}
+
+function RegimeBar({ thA, thB, pd }) {
+  const safe = Math.min(thA, 1) * 100;
+  const mid = Math.max(0, (Math.min(thB, 1) - Math.min(thA, 1))) * 100;
+  const danger = Math.max(0, 100 - safe - mid);
+  const marker = pd * 100;
+  return React.createElement("div", { style: { marginTop: 8 } },
+    React.createElement("div", { style: { position: "relative", height: 22, borderRadius: 5, overflow: "hidden", display: "flex", fontSize: 10, fontWeight: "bold" } },
+      React.createElement("div", { style: { width: safe + "%", background: "#27500A", display: "flex", alignItems: "center", justifyContent: "center", color: "#3fb950" } }, safe > 12 ? "SAFE" : ""),
+      React.createElement("div", { style: { width: mid + "%", background: "#4a2800", display: "flex", alignItems: "center", justifyContent: "center", color: C.yellow } }, mid > 16 ? "ATTACK A" : mid > 8 ? "A" : ""),
+      React.createElement("div", { style: { width: danger + "%", background: "#3d0000", display: "flex", alignItems: "center", justifyContent: "center", color: C.red } }, danger > 12 ? "A + B" : danger > 6 ? "A+B" : ""),
+      React.createElement("div", {
+        style: { position: "absolute", top: 0, bottom: 0, left: marker + "%", width: 2, background: C.teal, transform: "translateX(-50%)" }
+      })
+    ),
+    React.createElement("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: "monospace", color: C.muted, marginTop: 3 } },
+      React.createElement("span", null, "0%"),
+      React.createElement("span", { style: { color: C.yellow } }, "A: " + (thA * 100).toFixed(1) + "%"),
+      React.createElement("span", { style: { color: C.red } }, "A+B: " + (thB * 100).toFixed(1) + "%"),
+      React.createElement("span", null, "100%")
+    ),
+    React.createElement("div", { style: { display: "flex", gap: 16, marginTop: 5, fontSize: 10, fontFamily: "monospace", color: C.muted, flexWrap: "wrap" } },
+      React.createElement("span", null, React.createElement("span", { style: { color: "#3fb950" } }, "■"), " safe — no attack"),
+      React.createElement("span", null, React.createElement("span", { style: { color: C.yellow } }, "■"), " Attack A only (liveness)"),
+      React.createElement("span", null, React.createElement("span", { style: { color: C.red } }, "■"), " Attack A+B (safety)"),
+      React.createElement("span", null, React.createElement("span", { style: { color: C.teal } }, "│"), " current p_d")
+    )
+  );
+}
+
+// ─── Tab content ──────────────────────────────────────────────
+const TABS = [
+  { id: "overview", label: "Attack A vs B" },
+  { id: "tau",      label: "τ effect" },
+  { id: "t",        label: "t effect" },
+  { id: "R",        label: "R effect" },
+];
+
+const STEPS = 60;
+const PDS = Array.from({ length: STEPS + 1 }, (_, i) => i / STEPS);
+
+const LINE_COLORS = [C.blue, C.green, C.yellow, C.red, C.purple, C.orange];
+
+function mkData(vals, fn) {
+  return PDS.map((pd, i) => {
+    const row = { pd: (pd * 100).toFixed(1) };
+    vals.forEach((v, vi) => { row["v" + vi] = fn(pd, v); });
+    return row;
+  });
+}
+
+function AttackChart({ title, sub, data, keys, colors, labels }) {
+  return React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+    React.createElement("div", { style: { fontSize: 11, color: C.muted, fontFamily: "monospace", marginBottom: 4 } }, title),
+    React.createElement("div", { style: { fontSize: 10, color: C.muted, marginBottom: 8, opacity: 0.7 } }, sub),
+    React.createElement("div", { style: { display: "flex", gap: 12, marginBottom: 8, flexWrap: "wrap" } },
+      keys.map((k, i) => React.createElement("div", { key: k, style: { display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontFamily: "monospace", color: colors[i] } },
+        React.createElement("svg", { width: 20, height: 8 }, React.createElement("line", { x1: 0, y1: 4, x2: 20, y2: 4, stroke: colors[i], strokeWidth: 2 })),
+        labels[i]
+      ))
+    ),
+    React.createElement(ResponsiveContainer, { width: "100%", height: 260 },
+      React.createElement(LineChart, { data, margin: { left: 10, right: 10, top: 4, bottom: 18 } },
+        React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: C.border }),
+        React.createElement(XAxis, { dataKey: "pd", tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" }, label: { value: "p_d (%)", position: "insideBottom", offset: -10, fontSize: 10, fill: C.muted }, tickCount: 7 }),
+        React.createElement(YAxis, { domain: [0, 1], tick: { fontSize: 10, fill: C.muted, fontFamily: "monospace" }, tickCount: 6 }),
+        React.createElement(Tooltip, {
+          contentStyle: { background: C.panel, border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 11, fontFamily: "monospace" },
+          labelStyle: { color: C.muted }, itemStyle: { color: C.text },
+          formatter: (v, name) => [v.toFixed(5), name]
+        }),
+        keys.map((k, i) => React.createElement(Line, { key: k, type: "monotone", dataKey: k, stroke: colors[i], strokeWidth: 2, dot: false, name: labels[i], isAnimationActive: false }))
+      )
+    )
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────
+function App() {
+  const [tab, setTab] = useState("overview");
+  const [R,   setR]   = useState(5);
+  const [S,   setS]   = useState(20);
+  const [tau, setTau] = useState(13);
+  const [t,   setT]   = useState(5);
+  const [e,   setE]   = useState(2);
+  const [N,   setN]   = useState(2048);
+  const [pd,  setPd]  = useState(33);
+
+  const pdFrac = pd / 100;
+  const tauClamped = Math.min(tau, S);
+  const tClamped   = Math.min(t, R);
+
+  const thA = th_A(tauClamped, S, R);
+  const thB = th_B(e, R);
+
+  const paVal = PA(pdFrac, R, tClamped, S, tauClamped);
+  const pbVal = PB(pdFrac, R, N, S, tauClamped);
+  const pfVal = pfailEff(pdFrac, R, tClamped);
+  const pfullVal = Math.pow(pdFrac, R);
+  const failsNeeded = S - tauClamped + 1;
+  const hitsNeeded  = tauClamped;
+  const regime = pdFrac < thA ? "Safe — no attack effective"
+               : pdFrac < thB ? "Attack A only (liveness threat)"
+               : "Attack A + B (safety threat)";
+  const regimeColor = pdFrac < thA ? C.green : pdFrac < thB ? C.yellow : C.red;
+
+  // ── Tab: overview ──
+  const overviewData = useMemo(() => PDS.map(p => ({
+    pd: (p * 100).toFixed(1),
+    a: PA(p, R, tClamped, S, tauClamped),
+    b: PB(p, R, N, S, tauClamped)
+  })), [R, tClamped, S, tauClamped, N]);
+
+  // ── Tab: τ ──
+  // τ values: parametric — spread across [1, S] proportionally
+  const tauVals = useMemo(() => {
+    const raw = [1, Math.round(S*0.25), Math.round(S*0.5), Math.round(S*0.65), Math.round(S*0.8), Math.round(S*0.9), S];
+    return [...new Set(raw)].filter(v => v >= 1 && v <= S).sort((a,b) => a-b);
+  }, [S]);
+  const tauDataA = useMemo(() => mkData(tauVals, (p, v) => PA(p, R, tClamped, S, v)), [R, tClamped, S, tauVals]);
+  const tauDataB = useMemo(() => mkData(tauVals, (p, v) => PB(p, R, N, S, v)), [R, N, S, tauVals]);
+
+  // ── Tab: t ──
+  // t values: parametric — spread across [1, R]
+  const tVals = useMemo(() => {
+    if (R <= 4) return Array.from({length: R}, (_, i) => i + 1);
+    const raw = [1, Math.round(R*0.25), Math.round(R*0.5), Math.round(R*0.75), R-1, R];
+    return [...new Set(raw)].filter(v => v >= 1 && v <= R).sort((a,b) => a-b);
+  }, [R]);
+  const tDataA = useMemo(() => mkData(tVals, (p, v) => PA(p, R, v, S, tauClamped)), [R, S, tauClamped]);
+  const tDataB = useMemo(() => mkData(tVals, (p, v) => PB(p, R, N, S, tauClamped)), [R, N, S, tauClamped]);
+
+  // ── Tab: R ──
+  const rVals  = [1, 3, 5, 7, 10];
+  const rDataA = useMemo(() => mkData(rVals, (p, v) => PA(p, v, Math.min(tClamped, v), S, Math.min(tauClamped, S))), [tClamped, S, tauClamped]);
+  const rDataB = useMemo(() => mkData(rVals, (p, v) => PB(p, v, N, S, tauClamped)), [N, S, tauClamped]);
+
+  // ─ render ─
+  return React.createElement("div", { style: { background: C.bg, minHeight: "100vh", color: C.text, padding: "20px 18px" } },
+
+    // Header
+    React.createElement("div", { style: { marginBottom: 20 } },
+      React.createElement("div", { style: { fontSize: 10, letterSpacing: "0.18em", color: C.muted, fontFamily: "monospace", marginBottom: 5 } },
+        "NOMOS DA — ADVERSARY ATTACK SURFACE CALCULATOR"
+      ),
+      React.createElement("h1", { style: { margin: 0, fontSize: 21, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" } },
+        "Selective Availability Attack"
+      ),
+      React.createElement("div", { style: { marginTop: 4, fontSize: 11, color: C.muted } },
+        "Attack A (available→unavailable) exploits Type II error · ",
+        "Attack B (unavailable→available) exploits Type I error · ",
+        "Silence-only adversary model"
+      )
+    ),
+
+    // Params panel
+    React.createElement("div", { style: { background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 20px", marginBottom: 16 } },
+      React.createElement(SecHead, null, "Protocol & Adversary Parameters"),
+      React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 14, alignItems: "flex-end" } },
+        React.createElement(ParamInput, { label: "N  (subnetworks)", tip: "Total subnetworks = total columns in expanded data. N = e·K.", value: N, onChange: setN, step: 256, min: 256, max: 8192 }),
+        React.createElement(ParamInput, { label: "e  (expansion)", tip: "RS expansion factor. Recovery threshold K = N/e. Higher e raises Attack B global threshold.", value: e, onChange: setE, step: 1, min: 2, max: 6 }),
+        React.createElement(ParamInput, { label: "R  (nodes/subnet)", tip: "Nodes per subnetwork. Full capture P = p_d^R — exponential in R. Primary defence parameter.", value: R, onChange: v => { setR(v); if (t > v) setT(v); }, step: 1, min: 1, max: 20 }),
+        React.createElement(ParamInput, { label: "S  (samples)", tip: "Columns sampled per validation round. Attack A needs S−τ+1 failures. Attack B needs τ hits.", value: S, onChange: v => { setS(v); if (tau > v) setTau(v); }, step: 1, min: 5, max: 100 }),
+        React.createElement(ParamInput, { label: "τ  (threshold)", tip: `Accept if ≥ τ successes out of S.\nAttack A needs S−τ+1 = ${failsNeeded} failures.\nAttack B needs τ = ${hitsNeeded} hits.\nHigher τ → A easier, B harder.`, value: tauClamped, onChange: setTau, step: 1, min: 1, max: S, color: C.teal }),
+        React.createElement(ParamInput, { label: "t  (retries/subnet)", tip: "Nodes queried per subnetwork. If all t land on adversarial nodes → failure. At t=R only full capture fails. No effect on Attack B.", value: tClamped, onChange: setT, step: 1, min: 1, max: R, color: C.purple }),
+        React.createElement(ParamInput, { label: "p_d  (%)", tip: "Adversarial node fraction (0–100%). Teal line on regime bar shows current p_d.", value: pd, onChange: setPd, step: 1, min: 0, max: 100, color: C.orange }),
+      ),
+
+      // Stat cards
+      React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 14 } },
+        React.createElement(StatCard, { label: "Attack A  P_A", tip: `P(validator fails on available data)\nAdversary needs ${failsNeeded} failure(s) out of S=${S}`, value: paVal < 1e-6 ? "≈ 0" : paVal > 0.9999 ? "≈ 1" : paVal.toExponential(3), color: C.yellow }),
+        React.createElement(StatCard, { label: "Attack B  P_B", tip: `P(validator accepts unavailable data)\nAdversary needs ${hitsNeeded} hit(s) from captured subnets`, value: pbVal < 1e-6 ? "≈ 0" : pbVal > 0.9999 ? "≈ 1" : pbVal.toExponential(3), color: C.red }),
+        React.createElement(StatCard, { label: "P_fail^eff", tip: "Effective per-subnetwork failure prob. at current p_d, R, t. Averaged over adversarial occupancy distribution.", value: pfVal.toExponential(3), color: C.blue }),
+        React.createElement(StatCard, { label: "P_full = p_d^R", tip: "Full capture probability per subnetwork. Only fully captured subnets enable Attack B.", value: pfullVal.toExponential(3), color: C.purple }),
+        React.createElement(StatCard, { label: "Failures needed (A)", tip: `S − τ + 1 = ${S} − ${tauClamped} + 1.\nHigher τ → fewer failures needed → easier for Attack A.`, value: failsNeeded, color: C.yellow }),
+        React.createElement(StatCard, { label: "Hits needed (B)", tip: `τ = ${tauClamped}.\nHigher τ → more hits needed → harder for Attack B.`, value: hitsNeeded, color: C.red }),
+        React.createElement(StatCard, { label: "Regime", tip: `Attack A threshold: (τ/S)^{1/R} = ${(thA*100).toFixed(1)}%\nAttack B threshold: (1−1/e)^{1/R} = ${(thB*100).toFixed(1)}%`, value: regime, color: regimeColor }),
+      ),
+
+      // Regime bar
+      React.createElement("div", { style: { marginTop: 14 } },
+        React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 4 } }, "REGIME BAR — current p_d position (teal marker)"),
+        React.createElement(RegimeBar, { thA, thB, pd: pdFrac })
+      )
+    ),
+
+    // Tabs
+    React.createElement("div", { style: { display: "flex", gap: 3, marginBottom: 14, flexWrap: "wrap" } },
+      TABS.map(tb => React.createElement("button", {
+        key: tb.id, onClick: () => setTab(tb.id),
+        style: {
+          background: tab === tb.id ? C.blue : C.panel,
+          color: tab === tb.id ? "#0d1117" : C.muted,
+          border: `1px solid ${tab === tb.id ? C.blue : C.border}`,
+          borderRadius: 6, padding: "6px 16px", fontSize: 12,
+          fontFamily: "monospace", cursor: "pointer", fontWeight: tab === tb.id ? 700 : 400
+        }
+      }, tb.label))
+    ),
+
+    // Tab panels
+    React.createElement("div", { style: { background: C.panel, border: `1px solid ${C.border}`, borderRadius: 10, padding: "18px 14px" } },
+
+      // ── Overview tab ──
+      tab === "overview" && React.createElement(React.Fragment, null,
+        React.createElement(SecHead, null, "Attack A vs Attack B — same p_d axis"),
+        React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 12 } },
+          `Current params: R=${R}, t=${tClamped}, S=${S}, τ=${tauClamped}, e=${e}, N=${N}  ·  `,
+          React.createElement("span", { style: { color: C.yellow } }, `Attack A needs ${failsNeeded} failure(s)`),
+          "  ·  ",
+          React.createElement("span", { style: { color: C.red } }, `Attack B needs ${hitsNeeded} hit(s)`)
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
+          React.createElement(AttackChart, {
+            title: "Attack A (P_A) vs p_d",
+            sub: `Prob. targeted validator fails sampling. Needs ${failsNeeded} subnet failure(s).`,
+            data: overviewData, keys: ["a"], colors: [C.yellow], labels: [`Attack A (τ=${tauClamped})`]
+          }),
+          React.createElement(AttackChart, {
+            title: "Attack B (P_B) vs p_d",
+            sub: `Prob. validator accepts unavailable data. Needs ${hitsNeeded} captured subnet hit(s).`,
+            data: overviewData, keys: ["b"], colors: [C.red], labels: [`Attack B (τ=${tauClamped})`]
+          })
+        )
+      ),
+
+      // ── τ tab ──
+      tab === "tau" && React.createElement(React.Fragment, null,
+        React.createElement(SecHead, null, "τ effect on Attack A and Attack B"),
+        React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 6 } },
+          `Fixed: R=${R}, t=${tClamped}, S=${S}, e=${e}, N=${N}  ·  `,
+          React.createElement("span", { style: { color: C.yellow } }, "τ↑ → Attack A easier (S−τ+1 failures needed)"),
+          "  ·  ",
+          React.createElement("span", { style: { color: C.red } }, "τ↑ → Attack B harder (τ hits needed)"),
+          ` · τ=S (τ=${S}) is worst for A (1 failure), best for B (${S} hits)`
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
+          React.createElement(AttackChart, {
+            title: "Attack A vs p_d — varying τ",
+            sub: `Higher τ → fewer failures needed for Attack A. τ=${S} (max): only 1 failure needed. τ=1: all ${S} failures needed.`,
+            data: tauDataA,
+            keys: tauVals.map((_, i) => "v" + i),
+            colors: LINE_COLORS,
+            labels: tauVals.map(v => `τ=${v} (${S-v+1} fail${v===S?' worst A':''}${v===1?' best A':''})`)
+          }),
+          React.createElement(AttackChart, {
+            title: "Attack B vs p_d — varying τ",
+            sub: `Higher τ → more hits needed for Attack B. τ=${S} (max): all ${S} hits needed. τ=1: only 1 hit needed.`,
+            data: tauDataB,
+            keys: tauVals.map((_, i) => "v" + i),
+            colors: LINE_COLORS,
+            labels: tauVals.map(v => `τ=${v} (${v} hits${v===S?' best B':''}${v===1?' worst B':''})`)
+          })
+        ),
+        React.createElement("div", { style: { marginTop: 14 } },
+          React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 6 } }, "REGIME BARS — how τ shifts Attack A threshold (Attack B threshold is τ-independent)"),
+          tauVals.map(tv => React.createElement("div", { key: tv, style: { marginBottom: 8 } },
+            React.createElement("div", { style: { fontSize: 10, fontFamily: "monospace", color: C.muted, marginBottom: 2 } },
+              `τ=${tv}  →  A needs ${S-tv+1} failure(s)${tv===S?' ← worst for A':tv===1?' ← best for A':''}  ·  B needs ${tv} hit(s)${tv===1?' ← worst for B':tv===S?' ← best for B':''}  ·  A threshold: ${(th_A(tv, S, R)*100).toFixed(1)}%`
+            ),
+            React.createElement(RegimeBar, { thA: th_A(tv, S, R), thB, pd: pdFrac })
+          ))
+        )
+      ),
+
+      // ── t tab ──
+      tab === "t" && React.createElement(React.Fragment, null,
+        React.createElement(SecHead, null, "t effect — nodes queried per subnetwork"),
+        React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 6 } },
+          `Fixed: R=${R}, S=${S}, τ=${tauClamped}, e=${e}, N=${N}  ·  `,
+          React.createElement("span", { style: { color: C.purple } }, "t↑ → Attack A harder (all t queries must hit adversarial nodes)"),
+          "  ·  ",
+          React.createElement("span", { style: { color: C.muted } }, "Attack B unaffected by t (selective dispersal is independent of retries)")
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
+          React.createElement(AttackChart, {
+            title: "Attack A vs p_d — varying t",
+            sub: `At t=R=${R} only full capture fails — partial presence gives zero advantage. Lower curves are better.`,
+            data: tDataA,
+            keys: tVals.map((_, i) => "v" + i),
+            colors: LINE_COLORS,
+            labels: tVals.map(v => `t=${v}${v === R ? " (=R)" : ""}`)
+          }),
+          React.createElement(AttackChart, {
+            title: "Attack B vs p_d — varying t",
+            sub: "All lines are identical — t has zero effect on Attack B.",
+            data: tDataB,
+            keys: tVals.map((_, i) => "v" + i),
+            colors: LINE_COLORS,
+            labels: tVals.map(v => `t=${v}${v === R ? " (=R)" : ""}`)
+          })
+        ),
+        React.createElement("div", { style: { marginTop: 14, padding: "10px 14px", background: C.panel2, borderRadius: 8, border: `1px solid ${C.border}`, fontSize: 11, color: C.muted } },
+          React.createElement("span", { style: { color: C.purple } }, "Key insight: "),
+          `t affects only Attack A, not Attack B. Increasing t toward R=${R} reduces P_fail^eff by requiring all t queries to land on adversarial nodes. At t=R all partial-capture contribution is eliminated — only fully captured subnetworks can cause false failures. Regime thresholds are t-independent: changing t does not move the safe/A/A+B boundaries.`
+        )
+      ),
+
+      // ── R tab ──
+      tab === "R" && React.createElement(React.Fragment, null,
+        React.createElement(SecHead, null, "R effect — nodes per subnetwork (primary defence parameter)"),
+        React.createElement("div", { style: { fontSize: 11, color: C.muted, marginBottom: 6 } },
+          `Fixed: S=${S}, τ=${tauClamped}, e=${e}, N=${N} (t=R in each case to isolate R effect)  ·  `,
+          React.createElement("span", { style: { color: C.green } }, "R↑ → exponential drop in P_full = p_d^R → both attacks weaker"),
+          "  ·  Both regime thresholds shift right toward 1"
+        ),
+        React.createElement("div", { style: { display: "flex", gap: 16, flexWrap: "wrap" } },
+          React.createElement(AttackChart, {
+            title: "Attack A vs p_d — varying R",
+            sub: "Both curves compress toward p_d=1 as R grows. Exponential in R.",
+            data: rDataA,
+            keys: rVals.map((_, i) => "v" + i),
+            colors: LINE_COLORS,
+            labels: rVals.map(v => `R=${v}`)
+          }),
+          React.createElement(AttackChart, {
+            title: "Attack B vs p_d — varying R",
+            sub: "P_B = f(p_d^R) — same exponential suppression as Attack A.",
+            data: rDataB,
+            keys: rVals.map((_, i) => "v" + i),
+            colors: LINE_COLORS,
+            labels: rVals.map(v => `R=${v}`)
+          })
+        ),
+        React.createElement("div", { style: { marginTop: 14 } },
+          React.createElement("div", { style: { fontSize: 10, color: C.muted, fontFamily: "monospace", marginBottom: 6 } }, "REGIME BARS — how R shifts both thresholds"),
+          rVals.map(rv => React.createElement("div", { key: rv, style: { marginBottom: 8 } },
+            React.createElement("div", { style: { fontSize: 10, fontFamily: "monospace", color: C.muted, marginBottom: 2 } },
+              `R=${rv}  →  A threshold: ${(th_A(tauClamped, S, rv)*100).toFixed(1)}%  ·  B threshold: ${(th_B(e, rv)*100).toFixed(1)}%  ·  P_full at p_d=${pd}%: ${Math.pow(pdFrac, rv).toExponential(2)}`
+            ),
+            React.createElement(RegimeBar, { thA: th_A(tauClamped, S, rv), thB: th_B(e, rv), pd: pdFrac })
+          ))
+        )
+      )
+
+    )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+  </script>
+</body>
+</html>

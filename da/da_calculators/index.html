@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Logos DA Calculators</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0d1117; color: #e6edf3; font-family: 'Segoe UI', system-ui, sans-serif; padding: 48px 32px; }
+    .label { font-size: 10px; letter-spacing: 0.18em; color: #8b949e; font-family: monospace; margin-bottom: 10px; }
+    h1 { font-size: 22px; font-weight: 700; color: #e6edf3; letter-spacing: -0.02em; margin-bottom: 6px; }
+    .sub { font-size: 13px; color: #8b949e; margin-bottom: 40px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; max-width: 900px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 24px; text-decoration: none; color: inherit; display: block; transition: border-color 0.15s; }
+    .card:hover { border-color: #58a6ff; }
+    .card-tag { font-size: 10px; letter-spacing: 0.12em; font-family: monospace; color: #8b949e; margin-bottom: 10px; }
+    .card-title { font-size: 16px; font-weight: 600; color: #58a6ff; margin-bottom: 8px; }
+    .card-desc { font-size: 13px; color: #8b949e; line-height: 1.6; margin-bottom: 16px; }
+    .card-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag { font-size: 10px; font-family: monospace; padding: 2px 8px; border-radius: 4px; background: #1c2128; border: 1px solid #30363d; color: #8b949e; }
+    .tag.blue { border-color: #1f6feb; color: #58a6ff; background: #0d1f38; }
+    .tag.green { border-color: #1a7f37; color: #3fb950; background: #0d2818; }
+    .tag.red { border-color #8b0000; color: #f85149; background: #2d0a09; }
+  </style>
+</head>
+<body>
+  <div class="label">LOGOS BLOCKCHAIN — DATA AVAILABILITY LAYER</div>
+  <h1>DA Calculators</h1>
+  <p class="sub">Interactive parametric calculators for the Logos Blockchain DA protocol. Open directly in any modern browser.</p>
+
+  <div class="cards">
+    <a class="card" href="da_calculator.html">
+      <div class="card-tag">SAMPLING ANALYSIS</div>
+      <div class="card-title">DA Sampling Calculator</div>
+      <div class="card-desc">
+        Models data availability sampling as a binary hypothesis test. Sweep parameter spaces and observe how sampling configuration affects Type I/II error bounds, grey zone width, wasted slots, and blockchain security horizon.
+      </div>
+      <div class="card-tags">
+        <span class="tag blue">Hypergeometric</span>
+        <span class="tag blue">α / β errors</span>
+        <span class="tag blue">Grey zone Δ</span>
+        <span class="tag green">Wasted slots</span>
+        <span class="tag green">T₁/₂ security</span>
+        <span class="tag">Block builder</span>
+      </div>
+    </a>
+
+    <a class="card" href="adversary_calculator.html">
+      <div class="card-tag">ADVERSARIAL ANALYSIS</div>
+      <div class="card-title">Adversary Attack Surface Calculator</div>
+      <div class="card-desc">
+        Analyses the capabilities of an adversary controlling a fraction p_d of DA nodes. Models Attack A (liveness) and Attack B (safety) and shows how each protocol parameter shapes adversarial effectiveness.
+      </div>
+      <div class="card-tags">
+        <span class="tag" style="border-color:#8b4513;color:#e07b39;background:#1f0e00">Attack A (Type II)</span>
+        <span class="tag" style="border-color:#8b0000;color:#f85149;background:#2d0a09">Attack B (Type I)</span>
+        <span class="tag blue">p_d regimes</span>
+        <span class="tag blue">τ / t / R effect</span>
+        <span class="tag green">Silence model</span>
+      </div>
+    </a>
+  </div>
+</body>
+</html>
