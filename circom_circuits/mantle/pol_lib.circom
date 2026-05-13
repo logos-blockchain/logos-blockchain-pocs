@@ -72,14 +72,11 @@ template would_win_leadership(merkle_depth){
 
 
     // Derive the note id
-    component note_id = Poseidon2_hash(5);
-    component dst_note_id = NOTE_ID_V1();
-    note_id.inp[0] <== dst_note_id.out;
-    note_id.inp[1] <== transaction_hash;
-    note_id.inp[2] <== output_number;
-    note_id.inp[3] <== value;
-    note_id.inp[4] <== pk.out;
-
+    component note_id = derive_note_id();
+    note_id.op_id <== transaction_hash;
+    note_id.output_number <== output_number;
+    note_id.value <== value;
+    note_id.pk <== pk.out;
 
     // Check the note ID is aged enough
             //First check selectors are indeed bits
