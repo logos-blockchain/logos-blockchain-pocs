@@ -204,13 +204,14 @@ def PoseidonSponge(data, capacity, output_len):
     return output
 
 
-if len(sys.argv) != Integer(4):
-    print("Usage: <script> <epoch_nonce> <slot_number> <total_stake>")
+if len(sys.argv) != Integer(5):
+    print("Usage: <script> <merkle_depth> <epoch_nonce> <slot_number> <total_stake>")
     exit()
 
-epoch_nonce = int(sys.argv[Integer(1)])
-slot_number = int(sys.argv[Integer(2)])
-total_stake = int(sys.argv[Integer(3)])
+merkle_depth = int(sys.argv[Integer(1)])
+epoch_nonce = int(sys.argv[Integer(2)])
+slot_number = int(sys.argv[Integer(3)])
+total_stake = int(sys.argv[Integer(4)])
 
 if epoch_nonce >= p:
     print("epoch nonce must be less than p")
@@ -241,23 +242,24 @@ while(ticket > threshold):
     note_id = poseidon2_hash([F(232989242343357190262606),tx_hash,output_number,value,pk])
     ticket = poseidon2_hash([F(13887241025832268),F(epoch_nonce),F(slot_number),note_id,sk])
  
-aged_nodes = [F(randrange(0,p,1)) for i in range(32)]
-aged_selectors = randrange(0,2**32,1)
-aged_selectors = format(aged_selectors,'032b')
+aged_nodes = [F(randrange(0,p,1)) for i in range(merkle_depth)]
+aged_selectors = randrange(0,2**merkle_depth,1)
+string = '0'+str(merkle_depth)+'b'
+aged_selectors = format(aged_selectors,string)
 aged_root = note_id
-for i in range(32):
-    if int(aged_selectors[31-i]) == 0:
+for i in range(merkle_depth):
+    if int(aged_selectors[merkle_depth-1-i]) == 0:
         aged_root = Compression([aged_root,aged_nodes[i]])
     else:
         aged_root = Compression([aged_nodes[i],aged_root])
 
-unspent_nodes = [F(randrange(0,p,1)) for i in range(32)]
-unspent_selectors = randrange(0,2**32,1)
-unspent_selectors = format(unspent_selectors,'032b')
+unspent_nodes = [F(randrange(0,p,1)) for i in range(merkle_depth)]
+unspent_selectors = randrange(0,2**merkle_depth,1)
+unspent_selectors = format(unspent_selectors,string)
 
 latest_root = note_id
-for i in range(32):
-    if int(unspent_selectors[31-i]) == 0:
+for i in range(merkle_depth):
+    if int(unspent_selectors[merkle_depth-1-i]) == 0:
         latest_root = Compression([latest_root,unspent_nodes[i]])
     else:
         latest_root = Compression([unspent_nodes[i],latest_root])

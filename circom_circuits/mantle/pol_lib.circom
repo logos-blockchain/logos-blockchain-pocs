@@ -43,15 +43,15 @@ template derive_entropy(){
     out <== hash.out;
 }
 
-template would_win_leadership(secret_depth){
+template would_win_leadership(merkle_depth){
     signal input slot;
     signal input epoch_nonce;
     signal input t0;
     signal input t1;
 
     //Part of the note id proof of membership to prove aged
-    signal input aged_nodes[32];
-    signal input aged_selectors[32];         // must be bits
+    signal input aged_nodes[merkle_depth];
+    signal input aged_selectors[merkle_depth];         // must be bits
     signal input aged_root;
 
     //Used to derive the note identifier
@@ -83,12 +83,12 @@ template would_win_leadership(secret_depth){
 
     // Check the note ID is aged enough
             //First check selectors are indeed bits
-    for(var i = 0; i < 32; i++){
+    for(var i = 0; i < merkle_depth; i++){
         aged_selectors[i] * (1 - aged_selectors[i]) === 0;
     }
             //Then check the proof of membership
-    component aged_membership = proof_of_membership(32);
-    for(var i = 0; i < 32; i++){
+    component aged_membership = proof_of_membership(merkle_depth);
+    for(var i = 0; i < merkle_depth; i++){
         aged_membership.nodes[i] <== aged_nodes[i];
         aged_membership.selector[i] <== aged_selectors[i];
     }
@@ -123,15 +123,15 @@ template would_win_leadership(secret_depth){
 } 
 
 
-template proof_of_leadership(secret_depth){
+template proof_of_leadership(merkle_depth){
     signal input sl;
     signal input epoch_nonce;  // the epoch nonce eta
     signal input t0;
     signal input t1;
 
     //Part of the note id proof of membership to prove aged
-    signal input noteid_aged_path[32];
-    signal input noteid_aged_selectors[32];         // must be bits
+    signal input noteid_aged_path[merkle_depth];
+    signal input noteid_aged_selectors[merkle_depth];         // must be bits
     signal input ledger_aged;
 
     //Used to derive the note identifier
@@ -140,8 +140,8 @@ template proof_of_leadership(secret_depth){
     signal input note_output_number;
     
     //Part of the note id proof of membership to prove it's unspent
-    signal input noteid_latest_path[32];
-    signal input noteid_latest_selectors[32];         // must be bits
+    signal input noteid_latest_path[merkle_depth];
+    signal input noteid_latest_selectors[merkle_depth];         // must be bits
     signal input ledger_latest;
 
     // The winning note.
@@ -149,12 +149,12 @@ template proof_of_leadership(secret_depth){
 
 
     // Verify the note is winning the lottery
-    component lottery_checker = would_win_leadership(secret_depth);
+    component lottery_checker = would_win_leadership(merkle_depth);
     lottery_checker.slot <== sl;
     lottery_checker.epoch_nonce <== epoch_nonce;
     lottery_checker.t0 <== t0;
     lottery_checker.t1 <== t1;
-    for(var i = 0; i < 32; i++){
+    for(var i = 0; i < merkle_depth; i++){
         lottery_checker.aged_nodes[i] <== noteid_aged_path[i];
         lottery_checker.aged_selectors[i] <== noteid_aged_selectors[i];
     }
@@ -181,12 +181,12 @@ template proof_of_leadership(secret_depth){
 
     // Check that the note is unspent
             //First check selectors are indeed bits
-    for(var i = 0; i < 32; i++){
+    for(var i = 0; i < merkle_depth; i++){
         noteid_latest_selectors[i] * (1 - noteid_latest_selectors[i]) === 0;
     }
             //Then check the note id is in the latest ledger state
-    component unspent_membership = proof_of_membership(32);
-    for(var i = 0; i < 32; i++){
+    component unspent_membership = proof_of_membership(merkle_depth);
+    for(var i = 0; i < merkle_depth; i++){
         unspent_membership.nodes[i] <== noteid_latest_path[i];
         unspent_membership.selector[i] <== noteid_latest_selectors[i];
     }
