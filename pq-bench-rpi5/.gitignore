@@ -1,0 +1,38 @@
+# Build trees / vendored deps (rebuilt by setup/setup.sh)
+/vendor/
+/build/
+setup/versions.lock
+
+# Compiled harness binaries
+bench/kem_sig/bench_pq
+bench/tls/bench_tls
+*.o
+
+# Generated TLS material
+bench/tls/pki/
+
+# Per-run scratch dirs (intermediate artifacts; never committed)
+results/.work-*/
+
+# Local results are kept by users, not committed by default.
+# Comment the next line out if you DO want to commit your machine's results.
+results/*.json
+!results/example-*.json
+# Published baseline-grade RPi5 run (auto-calibrated full run)
+!results/rasberrypi5-20260608T223040Z.json
+
+# Merged dataset consumed by the dashboard. Tracked: ships the published RPi5
+# baseline so a fresh clone renders charts out-of-the-box. Contributors who
+# re-merge overwrite it locally (modified file they can commit or discard).
+analyze/png/
+
+# Python venv (matplotlib lives here; system python stays clean)
+analyze/.venv/
+
+# Machine-local Claude Code settings (never shared)
+.claude/settings.local.json
+
+# Python / OS cruft
+__pycache__/
+*.pyc
+.DS_Store
