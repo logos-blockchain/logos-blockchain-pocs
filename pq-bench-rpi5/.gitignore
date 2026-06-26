@@ -1,0 +1,41 @@
+# Build trees / vendored deps (rebuilt by setup/setup.sh)
+/vendor/
+/build/
+setup/versions.lock
+
+# Compiled harness binaries
+bench/kem_sig/bench_pq
+bench/tls/bench_tls
+*.o
+
+# Generated TLS material
+bench/tls/pki/
+
+# Per-run scratch dirs (intermediate artifacts; never committed)
+results/.work-*/
+
+# Local results are kept by users, not committed by default.
+# Comment the next line out if you DO want to commit your machine's results.
+results/*.json
+# Consolidated baseline-grade RPi5 run (KEM + sig + TLS in one pass): the Pi
+# validator reference baseline.
+!results/rasberrypi5-20260625T202356Z.json
+# Consolidated Apple M3 cross-platform run (apple-m3, KEM + sig + TLS in one
+# pass): is_baseline_grade=false by design, kept as the cross-platform reference.
+!results/mehmetmac-20260625T220618Z.json
+
+# Merged dataset consumed by the dashboard. Tracked: ships the published
+# baselines so a fresh clone renders charts out-of-the-box. Contributors who
+# re-merge overwrite it locally (modified file they can commit or discard).
+analyze/png/
+
+# Python venv (matplotlib lives here; system python stays clean)
+analyze/.venv/
+
+# Machine-local Claude Code settings (never shared)
+.claude/settings.local.json
+
+# Python / OS cruft
+__pycache__/
+*.pyc
+.DS_Store
