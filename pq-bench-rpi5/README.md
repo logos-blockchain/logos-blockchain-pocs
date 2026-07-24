@@ -10,7 +10,6 @@ uses *today* (X25519 key exchange + Ed25519 signatures) to PQ candidates cost on
 validator-grade hardware? Every chart draws that classical baseline as the
 reference line, so the PQ "tax" is always visible.
 
-Phase 1 covers **PQ KEMs**, **PQ signatures**, and **PQ TLS 1.3 handshakes**.
 Hooks are left for a later SNARK/STARK phase (see `config.yaml`); it is not
 implemented yet.
 
@@ -18,15 +17,111 @@ implemented yet.
 
 ## What gets measured
 
+The benchmark targets **four measurement groups**, all landing in the same
+self-describing results JSON and distinguished by a per-row `implementation`
+field:
+
+1. **liboqs — KEM + signatures** *(implemented)*: ML-KEM, Classic McEliece,
+   FrodoKEM, ML-DSA, Falcon, SLH-DSA, plus the classical X25519/Ed25519
+   baselines via OpenSSL EVP (`implementation: liboqs` / `openssl`).
+2. **RustCrypto — KEM + signatures** *(implemented — `bench/rust`)*: pure-Rust
+   implementations as an independent second source
+   (`implementation: rustcrypto`), measured by a Rust harness (`pqb-rust`)
+   that deliberately replicates `bench_pq.c`'s clock
+   (`clock_gettime(CLOCK_MONOTONIC)` via libc), auto-calibration, and
+   median/MAD statistics so the two groups are methodologically comparable.
+   Crates (pinned exactly; `Cargo.lock` committed; all pre-1.0 and
+   **unaudited** — fine for benchmarking): `ml-kem 0.3.2`, `ml-dsa 0.1.1`,
+   `slh-dsa 0.2.0-rc.5`, plus `x25519-dalek 3.0.0` / `ed25519-dalek 3.0.0`
+   for the in-family classical anchors. Signing is **hedged**, matching
+   liboqs. Coverage: ML-KEM 512/768/1024, ML-DSA 44/65/87, SLH-DSA SHA2
+   128f/128s/192f/256f, X25519, Ed25519. Rust signature rows carry **two
+   verify shapes**: `verify` (decode public key from wire bytes + verify —
+   the call shape of both `OQS_SIG_verify` and a TLS handshake) and
+   `verify_cached_key` (pre-parsed key object, expansion amortised — the
+   long-lived-peer pattern); their difference is the pk parse/expansion cost.
+   Totals use `verify`. **Not covered** — Falcon, Classic
+   McEliece and FrodoKEM have no mature pure-Rust implementation; those cells
+   stay genuinely absent rather than being filled by an FFI wrapper (pqcrypto,
+   liboqs-rust, aws-lc-rs), which would not be an independent source. The
+   dependency tree is verified free of liboqs/PQClean/C-FFI. Requires
+   cargo/rustc; if absent the group is skipped and the reason recorded in the
+   results.
+3. **TLS 1.3 handshakes by migration phase** *(implemented — two stacks)*:
+   - `implementation: openssl-native` — OpenSSL ≥ 3.5's **own** PQC, the
+     production-relevant path. The harness loads no provider for these rows
+     and **asserts at runtime that no OQS provider is active**. Matrix:
+     baseline (X25519+Ed25519), phase0 (X25519MLKEM768, SecP256r1MLKEM768 and
+     pure MLKEM512/768/1024, each + Ed25519 — the harvest-now-decrypt-later
+     configuration), phase2 (X25519MLKEM768 and the pure groups ×
+     ML-DSA-44/65/87, with natively generated ML-DSA certificates).
+   - `implementation: oqs-provider` — the full experimental-provider matrix,
+     kept in full: its ML-DSA cells deliberately overlap the native matrix
+     (same protocol + algorithms under two stacks isolates provider overhead),
+     and its Falcon and SLH-DSA (`sphincssha2128fsimple`) cells exist **only**
+     here — native OpenSSL can issue SLH-DSA certificates but cannot negotiate
+     SLH-DSA in TLS 1.3 (the IETF codepoints are still draft), so that row
+     being provider-only is itself a finding.
+4. **rustls + aws-lc-rs TLS 1.3 handshakes** *(implemented — `bench/rust-tls`)*:
+   the Rust TLS stack (`implementation: rustls-awslc`), same phase structure
+   and same in-memory methodology (`pqb-rust-tls` mirrors `bench_tls.c`: same
+   clock, same fixed connections+warmup loop, same statistics and
+   bytes-on-wire/ClientHello accounting). Coverage — measured: X25519,
+   X25519MLKEM768, SecP256r1MLKEM768, pure MLKEM768/MLKEM1024, against
+   Ed25519 (baseline/phase0) and ML-DSA-44/65/87 (phase2, using the natively
+   generated certificates). Recorded as `enabled:false` rows, not hidden:
+   rustls 0.23 has **no MLKEM512** group, and **SLH-DSA is absent from
+   rustls/aws-lc-rs entirely** — so across both production stacks SLH-DSA in
+   TLS 1.3 exists only in the experimental oqs-provider. **Unstable-feature
+   caveat**: the ML-DSA rows ride `rustls-post-quantum/aws-lc-rs-unstable`
+   (aws-lc-rs's `unstable` ML-DSA API) and carry `unstable_features: true`
+   in the row itself. **Two-variables caveat**: rustls-vs-OpenSSL compares
+   two protocol implementations AND two crypto backends (aws-lc-rs vs
+   OpenSSL native) at once — the variables are not separable from these
+   numbers, and this is not a language comparison. Unlike `bench/rust`, this
+   group makes no pure-Rust claim (aws-lc-rs wraps the AWS-LC C library).
+   To price these handshakes' primitive sums correctly, the run also measures
+   **aws-lc-rs pricing rows** (`implementation: aws-lc-rs`: ML-KEM-768/1024,
+   ML-DSA-44/65/87, X25519, secp256r1, Ed25519, same bench_pq methodology) —
+   explicitly the primitives these handshakes execute, NOT an independent
+   implementation; Stage 3's exclusion of FFI wrappers from the pure-Rust
+   group stands. Sums are priced strictly per-stack: C-stack cells from
+   liboqs/openssl rows, rustls cells from aws-lc-rs rows, never across.
+
 | Layer | Metrics |
 |-------|---------|
-| **KEM** | keygen / encaps / decaps wall-clock (median, MAD, IQR, min, max, mean, stddev, ops/sec) · pk/sk/ct sizes · heap high-water |
-| **Signature** | keygen / sign / verify wall-clock (same stats) · pk/sig sizes |
-| **TLS 1.3** | full-handshake latency · handshakes/sec · bytes-on-wire · ClientHello size (+ fragmentation flag) — as a matrix of (KEM group × signature) |
+| **KEM** | keygen / encaps / decaps wall-clock (median, MAD, IQR, min, max, mean, stddev, ops/sec) · a keygen+encaps+decaps total · pk/sk/ct sizes · heap high-water |
+| **Signature** | keygen / sign / verify wall-clock (same stats) · a keygen+sign+verify total · pk/sig sizes |
+| **TLS 1.3** | full-handshake latency · handshakes/sec · bytes-on-wire · ClientHello size (+ fragmentation flag) · a per-cell primitive-operation sum (below) — as a matrix of (KEM group × signature) |
 
 The **classical baseline** (X25519 / Ed25519 / X25519+Ed25519) is always
 included as the reference point — measured as a real primitive via OpenSSL, not
 hand-waved.
+
+### Migration phases (TLS)
+
+Every TLS matrix cell carries a `phase` field from our migration framework:
+
+- **`baseline`** — classical KEM group + classical signature
+  (X25519 + Ed25519): what Logos runs today.
+- **`phase0`** — PQ or hybrid KEM group + **classical** signature
+  (e.g. X25519MLKEM768 + Ed25519): the harvest-now-decrypt-later protection
+  actually deployed on today's internet.
+- **`phase2`** — PQ signature (e.g. X25519MLKEM768 + ML-DSA-65): full PQ
+  authentication.
+
+### Per-operation values vs totals
+
+Per-operation medians (±MAD) remain the primary data. In addition, every
+KEM/sig row carries a `total.sum_of_medians_ns` aggregate, and every enabled
+TLS cell carries a `handshake_primitive_sum` block: the sum of the primitive
+operations that one handshake actually performs (hybrid groups include **both**
+components — e.g. X25519MLKEM768 = 2× X25519 keygen + 2× derive + ML-KEM-768
+keygen/encaps/decaps — plus the signature sign + verifies), with the exact
+component list, counts and medians spelled out in the JSON so the number is
+auditable. These are **sums of medians** — derived figures, labelled as such,
+not measured latencies; the gap between `handshake_primitive_sum` and the
+measured handshake latency is the protocol overhead.
 
 ---
 
@@ -36,8 +131,11 @@ hand-waved.
 pq-bench-rpi5/
   setup/         build + pin liboqs, OpenSSL 3.5+, oqs-provider (versions.env / versions.lock)
   bench/kem_sig/ bench_pq.c     primitive KEM/sig harness (liboqs + OpenSSL EVP baselines)
-  bench/tls/     bench_tls.c    in-process TLS 1.3 handshake harness (OpenSSL API)
-                 run_tls.sh      PKI generation + (KEM × sig) matrix driver
+  bench/tls/     bench_tls.c    in-process TLS 1.3 handshake harness (OpenSSL API;
+                                openssl-native + oqs-provider matrices)
+                 run_tls.sh      PKI generation + three-stack phase-matrix driver
+  bench/rust/    pqb-rust       pure-Rust (RustCrypto) primitive harness + dalek anchors
+  bench/rust-tls/ pqb-rust-tls  rustls + aws-lc-rs TLS harness + aws-lc-rs pricing rows
   bench/lib/     assemble.py / merge helpers / miniyaml.py (zero-dep YAML)
   results/       results/<host>-<timestamp>.json  (one per run, full metadata)
   analyze/       merge.py (combine machines) + plot.py (matplotlib PNGs, optional venv)
@@ -51,15 +149,42 @@ pq-bench-rpi5/
 
 ## Quick start
 
+### Prerequisites (all platforms — read this first)
+
+- **OpenSSL ≥ 3.5** (the project pins the 3.5.x LTS line): Debian 13 ships it;
+  macOS uses keg-only Homebrew `openssl@3.5`. Older systems trigger an
+  automatic source build (+15–30 min).
+- **Rust toolchain (rustup)** — required for **two of the four measurement
+  groups** (RustCrypto primitives and the rustls TLS matrix). Install stable
+  via [rustup.rs](https://rustup.rs); if cargo is absent the run completes but
+  those groups are skipped (with recorded reasons). The rustls harness
+  compiles the AWS-LC C library on first build — several minutes, once.
+- **cmake** (liboqs and the AWS-LC build), a C compiler, **git**, **python3**
+  (stdlib only). `./setup/setup.sh deps` installs the apt packages on
+  Debian-family Linux.
+- Any Linux or macOS box works: non-Pi hosts run fine and are stamped
+  `is_baseline_grade=false` with reasons — only a Raspberry Pi 5 under the
+  controlled conditions below produces reference-grade rows.
+
 ### On a Raspberry Pi 5 (the real measurement target)
+
+Follow **[RUNNING-ON-YOUR-RPI5.md](RUNNING-ON-YOUR-RPI5.md)** — it is the
+verified step-by-step (Debian 13 checks included). The short version:
 
 ```bash
 git clone <this repo> && cd pq-bench-rpi5
-./setup/setup.sh                 # build + pin liboqs, OpenSSL 3.5+, oqs-provider
-sudo ./run.sh                    # sudo only to set the performance governor (see below)
-python3 analyze/merge.py results/*.json -o dashboard/data/merged.json
-# open dashboard/index.html (or deploy dashboard/ to GitHub Pages)
+./setup/setup.sh                 # build + pin liboqs, OpenSSL 3.5.x, oqs-provider
+(cd bench/rust && cargo build --release --locked)       # build Rust harnesses as
+(cd bench/rust-tls && cargo build --release --locked)   # your user, not as root
+sudo env "PATH=$PATH" "RUSTUP_HOME=$HOME/.rustup" "CARGO_HOME=$HOME/.cargo" ./run.sh
+python3 analyze/merge.py results/<your-file>.json -o dashboard/data/merged.json
+# view the dashboard over HTTP (see dashboard/README.md):
+#   cd dashboard && python3 -m http.server 8000
 ```
+
+**Why the long sudo line:** rustup installs per-user; under plain `sudo` root
+finds no usable toolchain and both Rust groups silently skip (verified the
+hard way on a Pi — the three env vars are all required).
 
 **On `sudo`:** it is **optional, not a prerequisite.** The only thing it does is
 set the CPU governor to `performance` — none of the crypto needs root. `./run.sh`
@@ -72,10 +197,12 @@ a quick local run you don't intend to submit.
 `./run.sh --kemsig-only` / `--tls-only` scope the run. `--iters/--warmup/--reps`
 override the `config.yaml` knobs.
 
-### On macOS (development / smoke testing only)
+### On macOS (cross-platform reference / smoke testing)
 
 ```bash
-brew install cmake openssl@3 git
+brew install cmake openssl@3.5 git   # keg-only 3.5.x — the pinned OpenSSL line
+# plus rustup (see Prerequisites) for the two Rust measurement groups
+git clone <this repo> && cd pq-bench-rpi5
 ./setup/setup.sh
 ./run.sh --smoke                 # produces valid JSON; stamped is_baseline_grade=false
 ```
@@ -86,25 +213,35 @@ brew install cmake openssl@3 git
 > 2. **No userspace cycle counter, and ~1 µs timer granularity.** macOS exposes
 >    no readable PMU cycle counter and its wall-clock quantizes to ~1 µs steps —
 >    a ~10% floor on the fastest ops (ML-KEM ~10 µs), negligible for anything
->    ≥100 µs (McEliece, FrodoKEM). (See "Timing source" above.)
+>    ≥100 µs (McEliece, FrodoKEM). (See "Timing source" under Measurement
+>    methodology below.)
 > 3. **No Linux cpufreq governor, and core-pinning isn't guaranteed.** Two of the
 >    noise-control knobs the gate relies on — `performance` governor and a pinned
 >    core — aren't available, and the build flags aren't `cortex-a76` either.
 >
 > Every macOS results file records `is_baseline_grade=false` with the exact
-> reasons, and the dashboard hides such runs by default. They still produce
+> reasons, and the dashboard shows such runs labelled **"cross-platform
+> reference — not baseline-grade"** (shown and labelled, never mixed with or
+> mistaken for the Pi reference). They still produce
 > **useful cross-platform numbers** (the heavier McEliece/FrodoKEM ops are barely
 > affected by the timer floor) — they just can't meet the controlled reference
 > bar, hence smoke-only.
 
 ### Docker (reproducible build — build only, never run)
 
-Docker is for reproducibly **building** the pinned toolchain (liboqs / OpenSSL /
-oqs-provider), not for running the benchmark:
+Docker is for reproducibly **building** the pinned C toolchain (liboqs /
+OpenSSL / oqs-provider), not for running the benchmark:
 
 ```bash
-docker build -t pq-bench-rpi5 .   # builds + pins the toolchain inside the image
+docker build -t pq-bench-rpi5 .   # builds + pins the C toolchain inside the image
 ```
+
+> **Coverage note:** the image covers the **C toolchain only** — it installs no
+> Rust, so the RustCrypto and rustls harnesses are not built in it, and it has
+> not been re-verified since those measurement groups were added. Its Debian 12
+> base also predates the system-OpenSSL-3.5 path, so `setup.sh` source-builds
+> OpenSSL inside the image. Treat it as a legacy convenience for the C
+> toolchain; the verified paths are the bare-metal ones above.
 
 **Run the measurement bare-metal on the host.** A container can't reliably set
 the CPU governor, pin to an isolated core, or read the Pi's thermal/throttle
@@ -245,9 +382,30 @@ All `bench_pq.c` references are `bench/kem_sig/bench_pq.c`.
 ## Reproducibility & provenance
 
 - **Pinned versions** live in `setup/versions.env` (liboqs `0.15.0`, OpenSSL
-  `3.5.0`/`≥3.5`, oqs-provider `0.9.0`). After cloning, `setup.sh` records the
-  **actually resolved git commits** and the **exact build flags + compiler
-  version** into `setup/versions.lock`.
+  pinned to the **3.5.x LTS line** on every platform — keg-only Homebrew
+  `openssl@3.5` on macOS, Debian 13's system 3.5.x on the Pi — so cross-machine
+  TLS numbers never compare different OpenSSL minor lines; oqs-provider
+  `0.9.0`). After cloning, `setup.sh` records the **actually resolved git
+  commits** and the **exact build flags + compiler version** into
+  `setup/versions.lock`.
+- **Acceleration provenance, empirically determined.** Every KEM/sig row
+  carries an `acceleration` field with two independent axes: the *arithmetic
+  path* (hand-written asm vs portable code, derived from the recorded build
+  defines / Rust provenance) and the *symmetric path* (which primitive the hot
+  loop uses — AES / SHA-2 / SHA-3-SHAKE / none — where that implementation
+  comes from, and whether it reaches hardware instructions on this CPU). The
+  per-algorithm routing was established by **differential builds** (toggling
+  `OQS_USE_{SHA2,AES,SHA3}_OPENSSL` and measuring which rows move), not by
+  reading configuration — necessary because e.g. liboqs 0.15's SLH-DSA bundles
+  its own portable SHA-2 and ignores the OQS symmetric layer entirely, while
+  its sibling SPHINCS+ routes through it.
+- **Results schema `2.0.0`.** Every KEM/sig row carries `implementation`
+  (which library produced the measurement: `liboqs`, `openssl`, `rustcrypto`,
+  `oqs-provider`, `openssl-native`, `rustls-awslc`; formerly named `backend`),
+  and every TLS cell carries `implementation` + `phase` + `sig_alg` and the
+  `handshake_primitive_sum` block. Older (schema `1.0.0`) result files are
+  **never rewritten** — `analyze/merge.py` injects the equivalent values at
+  merge time (`backend`→`implementation`, phase inference, derived totals).
 - **Every results JSON carries full environment metadata**: RPi model, RAM,
   kernel, OS, governor, the clock/temp trace during the run, compiler version,
   liboqs/oqs-provider/OpenSSL versions+commits, build flags, and the candidate
@@ -286,11 +444,34 @@ list of reasons.
   exposes them only as TLS groups, so they show as `enabled:false` there).
   Code-based + conservative-LWE backups: Classic McEliece
   348864/460896/460896f/6688128/6960119/8192128 (tiny ciphertext, slow keygen)
-  and FrodoKEM 640/976/1344-AES (unstructured LWE). Baseline: **X25519**.
-- **Signatures:** ML-DSA-44/65/87; SLH-DSA (SPHINCS+) variants;
-  Falcon/FN-DSA-512/1024. Baseline: **Ed25519**.
-- **TLS:** matrix of configured KEM groups × signature algorithms, always
-  including the classical **X25519 + Ed25519** pair.
+  and FrodoKEM 640/976/1344 in **both AES and SHAKE variants** — same
+  algorithm and arithmetic, different symmetric primitive, added as the
+  controlled test of the hardware-AES attribution for FrodoKEM's
+  cross-platform behaviour (on the M3 the SHAKE variants measure ~5–6.6×
+  slower than AES). Baseline: **X25519**.
+- **Signatures:** ML-DSA-44/65/87; hash-based **both** SLH-DSA (FIPS 205 final,
+  `SLH_DSA_PURE_SHA2_{128s,128f,192f,256f}`) **and** the round-3
+  `SPHINCS+-SHA2-*-simple` sets; Falcon/FN-DSA-512/1024. Baseline: **Ed25519**.
+
+  > **Comparability note (SPHINCS+ vs SLH-DSA).** Round-3 SPHINCS+ and FIPS 205
+  > SLH-DSA are **different algorithms**, not a relabelling. The earlier
+  > (now-retired generation) RPi5 baselines measured only the SPHINCS+ sets;
+  > the config measures both generations side by side, so runs (a) stay
+  > directly comparable to that history via the SPHINCS+ rows and (b) carry
+  > the standardised SLH-DSA numbers. Don't compare an SLH-DSA row against an old SPHINCS+ row as if
+  > they were the same scheme. The SLH-DSA identifiers exist in our pinned
+  > liboqs 0.15.0 build, so this needs no library upgrade; liboqs 0.16.0
+  > removes SPHINCS+ entirely, at which point the SPHINCS+ rows retire.
+- **RustCrypto second source:** the same ML-KEM / ML-DSA / SLH-DSA parameter
+  sets (and X25519/Ed25519 anchors) measured again from pure-Rust
+  implementations — rows join by `(kind, alg)` across `implementation`, and
+  `assemble.py` cross-checks that both implementations report identical
+  encoded sizes (a mismatch is reported loudly as a bug/spec disagreement,
+  never as a benchmark result).
+- **TLS:** two matrices (see "What gets measured"): the `openssl-native` phase
+  matrix (baseline / phase0 / phase2, Ed25519 and ML-DSA certificates) and the
+  full `oqs-provider` matrix — always including the classical
+  **X25519 + Ed25519** pair, measured natively.
 
 Classic McEliece and FrodoKEM are now measured (above). **HQC** is not — it is
 not enabled in the linked liboqs 0.15.0 build (disabled upstream after the
@@ -304,16 +485,21 @@ anything your liboqs build doesn't enable (and says so).
 ## Output & analysis
 
 - `results/<hostname>-<timestamp>.json` — one self-describing file per run.
-- `analyze/merge.py results/*.json -o dashboard/data/merged.json` — merge runs
-  from many machines into one dataset (keeps each run distinct; never mixes
-  baseline with smoke).
+- `analyze/merge.py` — with **no arguments**, merges the **published set**
+  pinned in `analyze/published_runs.txt` into `dashboard/data/merged.json`
+  (explicit manifest, so ad-hoc dev runs in `results/` never leak into the
+  published dataset); pass explicit files/globs for an ad-hoc merge. Keeps
+  each run distinct; never mixes baseline with smoke.
 - `analyze/plot.py` — matplotlib PNGs for papers (optional; install into
   `analyze/.venv` via `analyze/requirements.txt` to keep system python clean —
   it gracefully skips if matplotlib is absent).
-- `dashboard/` — static, no-backend dashboard: grouped bars by security level,
-  size-vs-speed scatter, TLS handshakes/sec, and ClientHello size — each with
-  the classical baseline drawn as a reference line. Deploy the folder to GitHub
-  Pages, or open `index.html` via any static server.
+- `dashboard/` — static, no-backend dashboard (see `dashboard/README.md`):
+  the TLS migration-phase view (Pi and Mac side by side, latency + bytes with
+  ×multipliers), the full three-stack handshake matrix, cross-implementation
+  primitive comparison with an always-visible acceleration table, the original
+  security-level charts (log axes, classical reference lines), and a
+  deliberate-absences panel. Serve over HTTP (`python3 -m http.server`) or
+  deploy the folder to GitHub Pages.
 
 ---
 
@@ -342,12 +528,14 @@ For your numbers to count as baseline-grade, the run must satisfy the
 ```bash
 git clone <this repo> && cd pq-bench-rpi5
 ./setup/setup.sh                 # build + pin liboqs / OpenSSL 3.5+ / oqs-provider
-sudo ./run.sh                    # sudo lets it set the performance governor
+(cd bench/rust && cargo build --release --locked)       # as your user (see the
+(cd bench/rust-tls && cargo build --release --locked)   # Pi guide for why)
+sudo env "PATH=$PATH" "RUSTUP_HOME=$HOME/.rustup" "CARGO_HOME=$HOME/.cargo" ./run.sh
 ```
 
-A full run takes a while (SLH-DSA signing dominates). To check the pipeline
-first without committing to the full run, use `sudo ./run.sh --smoke` — but only
-a **full** run (not `--smoke`) counts as a submission.
+A full run takes ~30 min on a Pi 5 (hash-based signing dominates). To check the
+pipeline first without committing to the full run, append `--smoke` to the same
+sudo line — but only a **full** run (not `--smoke`) counts as a submission.
 
 ### 2. Confirm it's baseline-grade
 
@@ -371,8 +559,9 @@ you what to fix (usually cooling/PSU/governor) — fix and re-run.
 Your `results/<hostname>-<timestamp>.json` is fully self-describing (host model,
 kernel, OS, governor, clock/temp trace, compiler + liboqs/oqs-provider/OpenSSL
 commits, build flags). It contains your **hostname** and Pi model and nothing
-else identifying — if you'd rather not share the hostname, set a name first with
-`HOSTNAME=mypi5 sudo ./run.sh`, or just rename the file before submitting.
+else identifying — if you'd rather not share the hostname, prepend
+`HOSTNAME=mypi5` to the sudo run line, or just rename the file before
+submitting.
 
 `results/*.json` is git-ignored by default (so you never accidentally commit
 local experiments), so add yours explicitly:
@@ -391,13 +580,18 @@ git commit -m "results: RPi5 baseline from <your-handle>"
 - [ ] `host.is_rpi: true` and `host.rpi_model` mentions "Raspberry Pi 5"
 - [ ] `run.governor_after: performance` and `run.pinned: true`
 - [ ] `toolchain.cflags_target: cortex-a76`
-- [ ] full run (not `--smoke`): `run.timed_iters` is the `config.yaml` value, not 25
+- [ ] full run (not `--smoke`): `run.repetitions` is the `config.yaml` value
+      (5), not 1 — smoke runs record `repetitions: 1`
+- [ ] all four measurement groups present (`toolchain.rust.available: true`;
+      rustcrypto / aws-lc-rs / rustls-awslc rows in the JSON) — if the Rust
+      groups are missing, revisit the sudo env line above
 - [ ] unmodified candidate list (or extensions noted in the PR description)
 
-Once merged, your file joins `results/`; anyone can regenerate the aggregated
-dataset and dashboard with
-`python3 analyze/merge.py results/*.json -o dashboard/data/merged.json`. The
-dashboard's run selector will then include your Pi alongside everyone else's.
+Once merged, your file joins `results/` and gets a line in
+`analyze/published_runs.txt` (the explicit manifest of published runs); anyone
+can then regenerate the aggregated dataset and dashboard with
+`python3 analyze/merge.py`. The dashboard's run selector will then include
+your Pi alongside everyone else's.
 
 > Prefer not to use GitHub? Open an issue and attach the JSON file instead — a
 > maintainer will add it.
